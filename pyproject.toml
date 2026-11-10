@@ -1,0 +1,22 @@
+[project]
+name = "shoplist-crawler"
+version = "0.1.0"
+description = "Yahoo!ショッピングの各店舗の「会社概要」ページ情報を集める個人用ツール"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.31"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+shoplist = "shoplist_crawler.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["shoplist_crawler"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
