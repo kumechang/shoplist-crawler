@@ -5,3 +5,6 @@ __pycache__/
 *.db
 *.csv
 .env
+*.enc
+restored/
+out/

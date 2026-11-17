@@ -1,0 +1,85 @@
+name: crawl
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # 毎週月曜 12:17 JST
+  workflow_dispatch:
+    inputs:
+      collect:
+        description: "店舗IDの収集(collect)も実行する"
+        type: boolean
+        default: false
+      limit:
+        description: "今回取得する最大店舗数"
+        type: string
+        default: "5000"
+
+permissions:
+  contents: read
+  actions: read # 前回のArtifactをダウンロードするため
+
+# 同時実行するとDBが食い違うので直列にする
+concurrency:
+  group: crawl
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      YAHOO_APP_ID: ${{ secrets.YAHOO_APP_ID }}
+      DB_PASSPHRASE: ${{ secrets.DB_PASSPHRASE }}
+      LIMIT: ${{ inputs.limit || '5000' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install .
+
+      - name: Check secrets
+        run: |
+          if [ -z "$DB_PASSPHRASE" ]; then
+            echo "::error::Secret DB_PASSPHRASE が未設定です(個人情報を含むDBを暗号化するために必須)"
+            exit 1
+          fi
+
+      - name: Restore DB from previous run
+        id: restore
+        run: scripts/restore_db.sh
+
+      - name: Collect seller IDs
+        if: steps.restore.outputs.restored != 'true' || inputs.collect
+        run: |
+          q=queries.txt; [ -f "$q" ] || q=queries.example.txt
+          shoplist collect --queries-file "$q" --all-sorts
+
+      - name: Fetch store info
+        # 5時間で打ち切る(Ctrl-C相当で止まり、取得済み分は保存済み)。次回は続きから。
+        timeout-minutes: 330
+        run: |
+          timeout -s INT 18000 shoplist fetch --limit "$LIMIT" || [ $? -eq 124 ]
+
+      - name: Export, encrypt
+        if: always() && hashFiles('shops.db') != ''
+        run: |
+          mkdir -p out
+          shoplist export --out shops.csv
+          scripts/crypt.sh enc shops.db out/shops.db.enc
+          scripts/crypt.sh enc shops.csv out/shops.csv.enc
+          echo '### 進捗' >> "$GITHUB_STEP_SUMMARY"
+          shoplist status >> "$GITHUB_STEP_SUMMARY"
+
+      # publicリポジトリのArtifactは誰でもダウンロードできるため、必ず暗号化したものだけを上げる
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('out/shops.db.enc') != ''
+        with:
+          name: shops-data
+          path: out/
+          retention-days: 90
