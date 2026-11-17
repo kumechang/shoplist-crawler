@@ -42,6 +42,10 @@ def cmd_collect(args) -> int:
                 new = db.add_ids(conn, found)
                 print(f"[{q} {sort}] APIエラー: {e} (それまでの新規 {new} 件は保存)", file=sys.stderr)
                 failures += 1
+                if e.status == 429:
+                    print("回数制限(429)に達したため中断します。集めた分は保存済みです。時間を置いて再実行してください", file=sys.stderr)
+                    print(db.counts(conn))
+                    return 3
                 if e.status in (401, 403) or failures >= 3:
                     print("認証エラー、または連続失敗のため中断します", file=sys.stderr)
                     return 1
@@ -105,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--appid", help="Yahoo!のClient ID (または環境変数 YAHOO_APP_ID)")
     c.add_argument("--sort", default="-score", choices=api.SORTS)
     c.add_argument("--all-sorts", action="store_true", help="全ての並び順で検索して取りこぼしを減らす")
-    c.add_argument("--delay", type=float, default=1.0, help="APIリクエスト間隔(秒)")
+    c.add_argument("--delay", type=float, default=2.0, help="APIリクエスト間隔(秒)")
     c.set_defaults(func=cmd_collect)
 
     a = sub.add_parser("add-ids", help="店舗IDを手動で追加する")

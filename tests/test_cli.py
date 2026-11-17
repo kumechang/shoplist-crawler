@@ -42,3 +42,20 @@ def test_collect_aborts_on_auth_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli.api, "iter_sellers", fake_iter)
     assert cli.main(["--db", str(tmp_path / "t.db"), "collect", "--appid", "X", "-q", "q1", "-q", "q2"]) == 1
+
+
+def test_collect_stops_gracefully_on_rate_limit(tmp_path, monkeypatch):
+    dbp = str(tmp_path / "t.db")
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    calls = []
+
+    def fake_iter(session, appid, query, *, sort, delay):
+        calls.append(query)
+        yield "a", "A"
+        raise cli.api.ApiError("HTTP 429", 429)
+
+    monkeypatch.setattr(cli.api, "iter_sellers", fake_iter)
+    rc = cli.main(["--db", dbp, "collect", "--appid", "X", "-q", "q1", "-q", "q2"])
+    assert rc == 3
+    assert calls == ["q1"]  # 429後は叩き続けない
+    assert db.counts(db.connect(dbp))["total"] == 1  # それまでの分は保存

@@ -22,10 +22,13 @@ def get_with_retry(
     *,
     params: dict | None = None,
     retries: int = 4,
+    backoff: float = 2.0,
+    max_wait: float = 60.0,
     timeout: float = 20.0,
     sleep=time.sleep,
 ) -> requests.Response:
-    """429/5xx/通信エラーは指数バックオフで再試行する。最終的な応答(またはエラー)を返す/投げる。"""
+    """429/5xx/通信エラーは指数バックオフ(backoff, 2*backoff, ... 最大max_wait秒)で再試行する。
+    最終的な応答(またはエラー)を返す/投げる。"""
     for attempt in range(retries + 1):
         try:
             resp = session.get(url, params=params, timeout=timeout)
@@ -37,7 +40,7 @@ def get_with_retry(
                 return resp
             retry_after = resp.headers.get("Retry-After", "")
             if retry_after.isdigit():
-                sleep(min(int(retry_after), 120))
+                sleep(min(int(retry_after), max_wait))
                 continue
-        sleep(min(2 ** (attempt + 1), 60) + random.random())
+        sleep(min(backoff * 2**attempt, max_wait) + random.random())
     raise AssertionError("unreachable")

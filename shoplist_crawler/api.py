@@ -49,7 +49,8 @@ def iter_sellers(
         }
         if genre_category_id is not None:
             params["genre_category_id"] = genre_category_id
-        resp = get_with_retry(session, ENDPOINT, params=params)
+        # 429(回数制限)は短時間では解けないことがあるので、待ち時間を長めに取る(10,20,40,80,120秒)
+        resp = get_with_retry(session, ENDPOINT, params=params, retries=5, backoff=10.0, max_wait=120.0)
         if resp.status_code != 200:
             raise ApiError(f"HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code)
         data = resp.json()

@@ -56,6 +56,8 @@ jobs:
 
       - name: Collect seller IDs
         if: steps.restore.outputs.restored != 'true' || inputs.collect
+        # 回数制限(429)などで失敗しても、集めた分は保存されているのでfetchは続ける
+        continue-on-error: true
         run: |
           q=queries.txt; [ -f "$q" ] || q=queries.example.txt
           shoplist collect --queries-file "$q" --all-sorts
