@@ -18,3 +18,27 @@ def test_add_ids_then_fetch_then_export(tmp_path, monkeypatch, info_html):
     assert cli.main(["--db", dbp, "export", "--out", str(out)]) == 0
     assert "サンプルストア" in out.read_text(encoding="utf-8-sig")
     assert db.counts(db.connect(dbp))["ok"] == 1
+
+
+def test_collect_keeps_ids_found_before_api_error(tmp_path, monkeypatch):
+    dbp = str(tmp_path / "t.db")
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+
+    def fake_iter(session, appid, query, *, sort, delay):
+        yield "a", "A"
+        yield "b", "B"
+        raise cli.api.ApiError("HTTP 400: bad", 400)
+
+    monkeypatch.setattr(cli.api, "iter_sellers", fake_iter)
+    rc = cli.main(["--db", dbp, "collect", "--appid", "X", "-q", "q1", "-q", "q2"])
+    assert rc == 0  # 400は飛ばして次のクエリへ(3連続で中断)
+    assert db.counts(db.connect(dbp))["total"] == 2
+
+
+def test_collect_aborts_on_auth_error(tmp_path, monkeypatch):
+    def fake_iter(session, appid, query, *, sort, delay):
+        raise cli.api.ApiError("HTTP 403", 403)
+        yield
+
+    monkeypatch.setattr(cli.api, "iter_sellers", fake_iter)
+    assert cli.main(["--db", str(tmp_path / "t.db"), "collect", "--appid", "X", "-q", "q1", "-q", "q2"]) == 1

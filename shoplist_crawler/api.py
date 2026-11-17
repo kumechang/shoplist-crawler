@@ -14,13 +14,16 @@ import requests
 from .http import get_with_retry
 
 ENDPOINT = "https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch"
-PAGE_SIZE = 100
-MAX_POSITION = 1000  # start + results の上限
-SORTS = ("-score", "+price", "-price", "-review_count", "-sold")
+# 公式ドキュメント: https://developer.yahoo.co.jp/webapi/shopping/v3/itemsearch.html
+PAGE_SIZE = 50  # results。ドキュメントの例が50。上限の記載はないので安全側に倒している
+MAX_POSITION = 1000  # 「start + results の合計は1,000が上限」
+SORTS = ("-score", "+price", "-price", "-review_count")  # ドキュメントに載っている並び順
 
 
 class ApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def iter_sellers(
@@ -35,8 +38,8 @@ def iter_sellers(
 ) -> Iterator[tuple[str, str]]:
     """1つの (query, sort) について (seller_id, seller_name) を順に返す。"""
     start = 1
-    while start <= MAX_POSITION:
-        results = min(PAGE_SIZE, MAX_POSITION - start + 1)
+    while start < MAX_POSITION:
+        results = min(PAGE_SIZE, MAX_POSITION - start)  # start + results <= 1000
         params = {
             "appid": appid,
             "query": query,
@@ -48,7 +51,7 @@ def iter_sellers(
             params["genre_category_id"] = genre_category_id
         resp = get_with_retry(session, ENDPOINT, params=params)
         if resp.status_code != 200:
-            raise ApiError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            raise ApiError(f"HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code)
         data = resp.json()
         hits = data.get("hits") or []
         for hit in hits:
@@ -57,7 +60,7 @@ def iter_sellers(
             if sid:
                 yield sid, seller.get("name") or ""
         total = data.get("totalResultsAvailable", 0)
-        start += len(hits) or results
-        if not hits or len(hits) < results or start > min(total, MAX_POSITION):
+        start += len(hits)
+        if not hits or len(hits) < results or start > total:
             break
         sleep(delay)

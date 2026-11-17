@@ -30,13 +30,23 @@ def cmd_collect(args) -> int:
 
     conn = db.connect(args.db)
     session = new_session()
+    failures = 0
     for q in queries:
         for sort in sorts:
+            found: list[tuple[str, str]] = []
             try:
-                found = list(api.iter_sellers(session, appid, q, sort=sort, delay=args.delay))
+                for item in api.iter_sellers(session, appid, q, sort=sort, delay=args.delay):
+                    found.append(item)
             except api.ApiError as e:
-                print(f"[{q} {sort}] APIエラー: {e}", file=sys.stderr)
-                return 1
+                # ここまでに集めた分は捨てずに保存する
+                new = db.add_ids(conn, found)
+                print(f"[{q} {sort}] APIエラー: {e} (それまでの新規 {new} 件は保存)", file=sys.stderr)
+                failures += 1
+                if e.status in (401, 403) or failures >= 3:
+                    print("認証エラー、または連続失敗のため中断します", file=sys.stderr)
+                    return 1
+                continue
+            failures = 0
             new = db.add_ids(conn, found)
             print(f"[{q} {sort}] 店舗 {len(set(s for s, _ in found))} 件中 新規 {new} 件", flush=True)
             time.sleep(args.delay)
