@@ -115,3 +115,57 @@ def test_children_splits_without_overlap_or_gap():
     a, b = partition.children(lo, hi)
     assert a == (500, 749) and b == (750, 999)
     assert partition.children(1000, 1000) == []
+
+
+# ---------- 幅優先(パス) ----------
+def test_max_level_defers_deeper_bands_and_next_pass_resumes(monkeypatch, tmp_path):
+    rng = random.Random(3)
+    # 500〜999円の価格帯に商品が集中(約3000件 > 999件)。ほかの価格帯は少ない
+    items = [(n, f"shop{rng.randrange(300)}", rng.randrange(500, 1000) if n % 5 < 3 else rng.choice([300, 1200, 2500, 9800]))
+             for n in range(5000)]
+    shop = FakeShop(items)
+    calls = []
+
+    def recording(*a, **k):
+        calls.append(dict(k["params"]))
+        return shop.get(*a, **k)
+
+    monkeypatch.setattr(api, "get_with_retry", lambda session, url, params=None, **kw: recording(session, url, params=params, **kw))
+    conn = db.connect(str(tmp_path / "t.db"))
+    c = partition.Crawler(conn, None, "A", delay=0, sleep=lambda s: None, log=lambda m: None, max_level=1)
+    c.crawl(TARGET)
+    bands = {(lo, hi) for lo, hi in partition.children(None, None)}
+    seen = {(int(p["price_from"]), int(p["price_to"])) for p in calls if "price_from" in p}
+    assert seen <= bands            # 初期の価格帯より細かい検索はしていない
+    assert c.deferred > 0           # 見送った価格帯がある(=まだ終わっていない)
+
+    c.max_level, c.deferred = None, 0   # 次のパス: 続きから最後まで
+    c.crawl(TARGET)
+    assert c.deferred == 0
+    assert {r[0] for r in conn.execute("SELECT seller_id FROM sellers")} == {sid for _, sid, _ in items}
+
+
+def test_cli_passes_visit_all_categories_before_going_deeper(tmp_path, monkeypatch):
+    """カテゴリーAを最後まで掘ってからBに行くのではなく、全カテゴリーを粗い価格帯で一巡してから深く掘る。"""
+    from shoplist_crawler import cli
+
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    monkeypatch.setattr(partition.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cli.categories, "list_targets", lambda *a, **k: [categories.Target(1, 3, "A"), categories.Target(2, 3, "B")])
+    bands = set(partition.children(None, None))
+    calls = []
+
+    def fake_pages(session, appid, *, genre_category_id, price_from=None, price_to=None, **kw):
+        calls.append((genre_category_id, price_from, price_to))
+        # 低価格帯(2000円未満)に商品が集中している想定。幅100円未満まで割れば999件に収まる
+        wide = price_from is None or (price_from < 2000 and (price_to - price_from) >= 100)
+        yield (5000 if wide else 10), [{"seller": {"sellerId": f"s{genre_category_id}-{price_from}", "name": "n"},
+                                          "parentGenreCategories": CHAIN, "genreCategory": {"id": 9, "name": "x", "depth": 3}}]
+
+    monkeypatch.setattr(cli.api, "iter_pages", fake_pages)
+    assert cli.main(["--db", str(tmp_path / "t.db"), "collect-categories", "--appid", "X", "--delay", "0"]) == 0
+    level1 = [i for i, (cid, lo, hi) in enumerate(calls) if lo is not None and (lo, hi) in bands]
+    deeper = [i for i, (cid, lo, hi) in enumerate(calls) if lo is not None and (lo, hi) not in bands]
+    assert level1 and deeper
+    assert max(level1) < min(deeper)  # 全カテゴリーの粗い価格帯が先
+    assert {calls[i][0] for i in level1} == {1, 2}

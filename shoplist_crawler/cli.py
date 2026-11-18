@@ -85,9 +85,14 @@ def cmd_collect_categories(args) -> int:
         deadline=deadline, recrawl_days=args.recrawl_days or None, log=lambda m: print(m, flush=True),
     )
     try:
-        for i, t in enumerate(targets, 1):
-            print(f"--- カテゴリ {i}/{len(targets)}: {t.name} (id={t.category_id}) ---", flush=True)
-            crawler.crawl(t)
+        for n, level in enumerate(partition.PASS_LEVELS, 1):
+            crawler.max_level, crawler.deferred = level, 0
+            scope = "無制限(最後まで)" if level is None else f"{level}段階目まで"
+            print(f"=== パス {n}/{len(partition.PASS_LEVELS)}: 価格帯の分割は{scope} ===", flush=True)
+            for i, t in enumerate(targets, 1):
+                crawler.crawl(t)
+            if crawler.deferred == 0:
+                break  # 見送った価格帯がなければ、これで全部終わり
     except partition.Deadline:
         print(f"時間切れのため中断します(進捗は保存済み。次回は続きから再開します)。今回の新規店舗 {crawler.new_sellers} 件")
         print(db.counts(conn))

@@ -99,7 +99,7 @@ def test_collect_categories_saves_sellers_with_category_and_resumes(tmp_path, mo
         yield 2, [_hit("a"), _hit("b")]
 
     monkeypatch.setattr(cli.api, "iter_pages", fake_pages)
-    args = ["--db", dbp, "collect-categories", "--appid", "X"]
+    args = ["--db", dbp, "collect-categories", "--appid", "X", "--delay", "0"]
     assert cli.main(args) == 0
     assert calls == [9]  # 総件数2件(<=999)なので1回で完了
     conn = db.connect(dbp)
@@ -121,7 +121,7 @@ def test_collect_categories_429_keeps_partial_and_stops(tmp_path, monkeypatch):
         raise cli.api.ApiError("HTTP 429", 429)
 
     monkeypatch.setattr(cli.api, "iter_pages", fake_pages)
-    assert cli.main(["--db", dbp, "collect-categories", "--appid", "X"]) == 3
+    assert cli.main(["--db", dbp, "collect-categories", "--appid", "X", "--delay", "0"]) == 3
     assert calls == [1]  # 2つ目のカテゴリーは叩かない
     conn = db.connect(dbp)
     assert db.counts(conn)["total"] == 1  # それまでの分は保存
