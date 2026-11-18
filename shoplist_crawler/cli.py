@@ -6,7 +6,7 @@ import random
 import sys
 import time
 
-from . import api, db, info
+from . import api, categories, db, info
 from .http import new_session
 
 
@@ -58,6 +58,71 @@ def cmd_collect(args) -> int:
     return 0
 
 
+def cmd_collect_categories(args) -> int:
+    appid = args.appid or os.environ.get("YAHOO_APP_ID")
+    if not appid:
+        print("エラー: Client ID(appid)を --appid か環境変数 YAHOO_APP_ID で渡してください", file=sys.stderr)
+        return 2
+    sorts = api.SORTS if args.all_sorts else (args.sort,)
+    conn = db.connect(args.db)
+    session = new_session()
+    deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
+
+    try:
+        targets = categories.list_targets(session, appid, args.root_id, depth=args.depth, delay=args.delay)
+    except api.ApiError as e:
+        print(f"カテゴリ一覧の取得に失敗: {e}", file=sys.stderr)
+        return 1
+    print(f"対象カテゴリ {len(targets)} 件 (root={args.root_id}, {args.depth}階層目まで)", flush=True)
+    if args.list_only:
+        for t in targets:
+            print(f"{t.category_id}\t{t.depth}\t{t.name}")
+        return 0
+
+    for i, t in enumerate(targets, 1):
+        for sort in sorts:
+            if db.crawl_done(conn, t.category_id, sort):
+                continue
+            if deadline and time.monotonic() > deadline:
+                print("時間切れのため中断します(進捗は保存済み。次回は続きから再開します)")
+                print(db.counts(conn))
+                return 0
+            found: list[tuple[str, str]] = []
+            pairs: list[tuple[str, str]] = []
+            total = None
+            err = None
+            try:
+                for total, hits in api.iter_pages(
+                    session, appid, genre_category_id=t.category_id, sort=sort, delay=args.delay
+                ):
+                    for hit in hits:
+                        seller = hit.get("seller") or {}
+                        sid = seller.get("sellerId")
+                        if sid:
+                            found.append((sid, seller.get("name") or ""))
+                            pairs.append((sid, categories.category_path(hit, t.depth, t.name)))
+            except api.ApiError as e:
+                err = e
+            # エラーでも、ここまでに集めた分は保存する
+            new = db.add_ids(conn, found)
+            db.add_seller_categories(conn, pairs)
+            if err:
+                print(f"[{i}/{len(targets)} {t.name} {sort}] APIエラー: {err} (それまでの新規 {new} 件は保存)", file=sys.stderr)
+                if err.status == 429:
+                    print("回数制限(429)に達したため中断します。時間を置いて再実行してください(続きから再開します)", file=sys.stderr)
+                    print(db.counts(conn))
+                    return 3
+                return 1
+            # 全件(先頭999件以内)取れたカテゴリは、他の並び順で検索しても増えないので完了扱いにする
+            complete = total is not None and total < api.MAX_POSITION
+            db.mark_crawled(conn, t.category_id, sorts if complete else [sort])
+            print(f"[{i}/{len(targets)} {t.name} {sort}] 商品 {total} 件 / 店舗 {len(set(x for x, _ in found))} 件中 新規 {new} 件", flush=True)
+            time.sleep(args.delay)
+    print("全カテゴリの検索が完了しました")
+    print(db.counts(conn))
+    return 0
+
+
 def cmd_add_ids(args) -> int:
     ids = list(args.ids or [])
     if args.file:
@@ -88,7 +153,7 @@ def cmd_fetch(args) -> int:
 
 def cmd_export(args) -> int:
     conn = db.connect(args.db)
-    n = db.export_csv(conn, args.out)
+    n = db.export_csv(conn, args.out, args.format)
     print(f"{n} 件を {args.out} に出力しました")
     return 0
 
@@ -125,6 +190,17 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--delay", type=float, default=2.0, help="APIリクエスト間隔(秒)")
     c.set_defaults(func=cmd_collect)
 
+    cc = sub.add_parser("collect-categories", help="カテゴリーごとに商品検索して、店舗IDとカテゴリーを集める")
+    cc.add_argument("--root-id", type=int, default=13457, help="トップ階層のジャンルカテゴリID (default: 13457=ファッション)")
+    cc.add_argument("--depth", type=int, default=3, help="何階層目のカテゴリーまで分けて検索するか (default: 3)")
+    cc.add_argument("--appid", help="Yahoo!のClient ID (または環境変数 YAHOO_APP_ID)")
+    cc.add_argument("--sort", default="-score", choices=api.SORTS)
+    cc.add_argument("--all-sorts", action="store_true", help="全ての並び順で検索(取りこぼしが減る代わりに時間がかかる)")
+    cc.add_argument("--delay", type=float, default=2.0, help="APIリクエスト間隔(秒)")
+    cc.add_argument("--max-minutes", type=float, help="この時間を過ぎたら次のカテゴリー前で中断(再実行で続きから)")
+    cc.add_argument("--list-only", action="store_true", help="対象カテゴリーを表示するだけ(商品検索はしない)")
+    cc.set_defaults(func=cmd_collect_categories)
+
     a = sub.add_parser("add-ids", help="店舗IDを手動で追加する")
     a.add_argument("ids", nargs="*")
     a.add_argument("--file", help="店舗IDを1行1つで書いたファイル")
@@ -138,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     e = sub.add_parser("export", help="取得済みの店舗情報をCSVに出力する")
     e.add_argument("--out", default="shops.csv")
+    e.add_argument("--format", choices=("sample", "full"), default="sample",
+                   help="sample=指定の列(店舗×カテゴリーごとに1行) / full=全項目(1店舗1行)")
     e.set_defaults(func=cmd_export)
 
     m = sub.add_parser("sample", help="取得済みの店舗をランダムに数件表示する")

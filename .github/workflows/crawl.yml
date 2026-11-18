@@ -5,8 +5,12 @@ on:
     - cron: "17 3 * * 1" # 毎週月曜 12:17 JST
   workflow_dispatch:
     inputs:
-      collect:
-        description: "店舗IDの収集(collect)も実行する"
+      root_id:
+        description: "店舗を集めるトップ階層のジャンルカテゴリID (13457=ファッション)"
+        type: string
+        default: "13457"
+      all_sorts:
+        description: "全ての並び順で検索する(取りこぼしが減る代わりに時間がかかる)"
         type: boolean
         default: false
       limit:
@@ -33,6 +37,8 @@ jobs:
       YAHOO_APP_ID: ${{ secrets.YAHOO_APP_ID }}
       DB_PASSPHRASE: ${{ secrets.DB_PASSPHRASE }}
       LIMIT: ${{ inputs.limit || '5000' }}
+      ROOT_ID: ${{ inputs.root_id || '13457' }}
+      ALL_SORTS: ${{ inputs.all_sorts && '--all-sorts' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,19 +60,19 @@ jobs:
         id: restore
         run: scripts/restore_db.sh
 
-      - name: Collect seller IDs
-        if: steps.restore.outputs.restored != 'true' || inputs.collect
-        # 回数制限(429)などで失敗しても、集めた分は保存されているのでfetchは続ける
+      - name: Collect seller IDs by category
+        # カテゴリーごとに商品検索して、店舗IDとカテゴリーを集める。進捗はDBに保存され、毎回続きから再開する
+        # (全カテゴリー完了後は何もしない)。回数制限(429)などで失敗しても、fetchは続ける
         continue-on-error: true
-        run: |
-          q=queries.txt; [ -f "$q" ] || q=queries.example.txt
-          shoplist collect --queries-file "$q" --all-sorts
+        timeout-minutes: 115
+        run: shoplist collect-categories --root-id "$ROOT_ID" --max-minutes 100 $ALL_SORTS
 
       - name: Fetch store info
-        # 5時間で打ち切る(Ctrl-C相当で止まり、取得済み分は保存済み)。次回は続きから。
-        timeout-minutes: 330
+        # 3.5時間で打ち切る(Ctrl-C相当で止まり、取得済み分は保存済み)。次回は続きから。
+        # (collect 最大100分 + fetch 210分 + 前後の処理が、ジョブの上限345分に収まるようにしている)
+        timeout-minutes: 225
         run: |
-          timeout -s INT 18000 shoplist fetch --limit "$LIMIT" || [ $? -eq 124 ]
+          timeout -s INT 12600 shoplist fetch --limit "$LIMIT" || [ $? -eq 124 ]
 
       - name: Export, encrypt
         if: always() && hashFiles('shops.db') != ''

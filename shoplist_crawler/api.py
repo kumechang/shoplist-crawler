@@ -26,6 +26,44 @@ class ApiError(RuntimeError):
         self.status = status
 
 
+def iter_pages(
+    session: requests.Session,
+    appid: str,
+    *,
+    query: str | None = None,
+    genre_category_id: int | None = None,
+    sort: str = "-score",
+    delay: float = 2.0,
+    sleep=time.sleep,
+) -> Iterator[tuple[int, list[dict]]]:
+    """1つの検索条件について、ページごとに (totalResultsAvailable, hits) を返す。
+
+    query か genre_category_id のどちらかは必須。最大でも先頭999件までしか取れない。
+    """
+    if not query and genre_category_id is None:
+        raise ValueError("query か genre_category_id が必要です")
+    start = 1
+    while start < MAX_POSITION:
+        results = min(PAGE_SIZE, MAX_POSITION - start)  # start + results <= 1000
+        params = {"appid": appid, "sort": sort, "results": results, "start": start}
+        if query:
+            params["query"] = query
+        if genre_category_id is not None:
+            params["genre_category_id"] = genre_category_id
+        # 429(回数制限)は短時間では解けないことがあるので、待ち時間を長めに取る(10,20,40,80,120秒)
+        resp = get_with_retry(session, ENDPOINT, params=params, retries=5, backoff=10.0, max_wait=120.0)
+        if resp.status_code != 200:
+            raise ApiError(f"HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code)
+        data = resp.json()
+        hits = data.get("hits") or []
+        total = data.get("totalResultsAvailable", 0)
+        yield total, hits
+        start += len(hits)
+        if not hits or len(hits) < results or start > total:
+            break
+        sleep(delay)
+
+
 def iter_sellers(
     session: requests.Session,
     appid: str,
@@ -37,31 +75,11 @@ def iter_sellers(
     sleep=time.sleep,
 ) -> Iterator[tuple[str, str]]:
     """1つの (query, sort) について (seller_id, seller_name) を順に返す。"""
-    start = 1
-    while start < MAX_POSITION:
-        results = min(PAGE_SIZE, MAX_POSITION - start)  # start + results <= 1000
-        params = {
-            "appid": appid,
-            "query": query,
-            "sort": sort,
-            "results": results,
-            "start": start,
-        }
-        if genre_category_id is not None:
-            params["genre_category_id"] = genre_category_id
-        # 429(回数制限)は短時間では解けないことがあるので、待ち時間を長めに取る(10,20,40,80,120秒)
-        resp = get_with_retry(session, ENDPOINT, params=params, retries=5, backoff=10.0, max_wait=120.0)
-        if resp.status_code != 200:
-            raise ApiError(f"HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code)
-        data = resp.json()
-        hits = data.get("hits") or []
+    for _total, hits in iter_pages(
+        session, appid, query=query, genre_category_id=genre_category_id, sort=sort, delay=delay, sleep=sleep
+    ):
         for hit in hits:
             seller = hit.get("seller") or {}
             sid = seller.get("sellerId")
             if sid:
                 yield sid, seller.get("name") or ""
-        total = data.get("totalResultsAvailable", 0)
-        start += len(hits)
-        if not hits or len(hits) < results or start > total:
-            break
-        sleep(delay)

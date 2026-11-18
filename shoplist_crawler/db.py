@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Iterable, Iterator
 
-from .info import EXPORT_FIELDS, to_row
+from .info import EXPORT_FIELDS, SAMPLE_HEADERS, to_row, to_sample_row
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sellers (
@@ -20,6 +20,21 @@ CREATE TABLE IF NOT EXISTS sellers (
     raw_json      TEXT           -- info.html の seller をそのまま保存
 );
 CREATE INDEX IF NOT EXISTS idx_sellers_status ON sellers(status);
+
+-- 店舗がどのカテゴリー(例: メンズファッション/その他メンズファッション)の商品検索で見つかったか
+CREATE TABLE IF NOT EXISTS seller_categories (
+    seller_id TEXT NOT NULL,
+    category  TEXT NOT NULL,
+    PRIMARY KEY (seller_id, category)
+);
+
+-- カテゴリー検索の進捗(中断しても続きから再開するため)
+CREATE TABLE IF NOT EXISTS category_crawl (
+    category_id INTEGER NOT NULL,
+    sort        TEXT NOT NULL,
+    done_at     TEXT NOT NULL,
+    PRIMARY KEY (category_id, sort)
+);
 """
 
 
@@ -42,6 +57,28 @@ def add_ids(conn: sqlite3.Connection, items: Iterable[tuple[str, str]]) -> int:
     )
     conn.commit()
     return conn.total_changes - before
+
+
+def add_seller_categories(conn: sqlite3.Connection, pairs: Iterable[tuple[str, str]]) -> None:
+    conn.executemany(
+        "INSERT OR IGNORE INTO seller_categories(seller_id, category) VALUES (?,?)",
+        [(sid, cat) for sid, cat in pairs if cat],
+    )
+    conn.commit()
+
+
+def crawl_done(conn: sqlite3.Connection, category_id: int, sort: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM category_crawl WHERE category_id=? AND sort=?", (category_id, sort)
+    ).fetchone() is not None
+
+
+def mark_crawled(conn: sqlite3.Connection, category_id: int, sorts: Iterable[str]) -> None:
+    conn.executemany(
+        "INSERT OR IGNORE INTO category_crawl(category_id, sort, done_at) VALUES (?,?,?)",
+        [(category_id, s, _now()) for s in sorts],
+    )
+    conn.commit()
 
 
 def pending_ids(conn: sqlite3.Connection, *, retry_errors: bool = False, limit: int | None = None) -> list[str]:
@@ -75,14 +112,28 @@ def iter_rows(conn: sqlite3.Connection) -> Iterator[dict]:
         yield row
 
 
-def export_csv(conn: sqlite3.Connection, path: str) -> int:
-    fields = ["seller_id", "url"] + [c for c, _ in EXPORT_FIELDS]
+def iter_sample_rows(conn: sqlite3.Connection) -> Iterator[dict]:
+    """サンプルCSVと同じ列。店舗×カテゴリーごとに1行(カテゴリー不明の店舗は空欄で1行)。"""
+    cats: dict[str, list[str]] = {}
+    for sid, cat in conn.execute("SELECT seller_id, category FROM seller_categories ORDER BY seller_id, category"):
+        cats.setdefault(sid, []).append(cat)
+    for sid, raw in conn.execute("SELECT seller_id, raw_json FROM sellers WHERE status='ok' ORDER BY seller_id"):
+        base = to_sample_row(sid, json.loads(raw))
+        for cat in cats.get(sid) or [""]:
+            yield {**base, "カテゴリー": cat}
+
+
+def export_csv(conn: sqlite3.Connection, path: str, fmt: str = "sample") -> int:
+    if fmt == "sample":
+        fields, rows = SAMPLE_HEADERS, iter_sample_rows(conn)
+    else:
+        fields, rows = ["seller_id", "url"] + [c for c, _ in EXPORT_FIELDS], iter_rows(conn)
     n = 0
     # utf-8-sig: Excelで開いても文字化けしない
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
-        for row in iter_rows(conn):
+        for row in rows:
             w.writerow(row)
             n += 1
     return n

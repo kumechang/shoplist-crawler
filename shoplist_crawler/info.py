@@ -42,6 +42,13 @@ EXPORT_FIELDS = [
 ]
 
 
+# 「サンプルと同じ形式」のCSV列 (カテゴリーは別途付ける)
+SAMPLE_HEADERS = [
+    "URL", "会社名（商号）", "郵便番号", "住所", "代表者", "ストア名", "ストア名（フリガナ）",
+    "運営責任者", "お問い合わせ電話番号", "お問い合わせメールアドレス", "カテゴリー",
+]
+
+
 @dataclass
 class FetchResult:
     status: str  # ok / not_found / error
@@ -67,14 +74,41 @@ def to_row(seller: dict) -> dict:
     row = {}
     for col, key in EXPORT_FIELDS:
         if key == "contactAddress":
-            value = "".join(
-                str(seller.get(k) or "")
-                for k in ("contactPref", "contactCity", "contactAddr")
-            )
+            value = contact_address(seller)
         else:
             value = seller.get(key, "")
         row[col] = "" if value is None else value
     return row
+
+
+def contact_address(seller: dict) -> str:
+    """ページの「お問い合わせ情報」の住所。建物名(contactBuild)まで含める。"""
+    return "".join(str(seller.get(k) or "") for k in ("contactPref", "contactCity", "contactAddr", "contactBuild"))
+
+
+_JP_GAP = re.compile(r"(?<=[^\x00-\x7f])[\s\u3000]+(?=[^\x00-\x7f])")
+
+
+def squash_japanese_spaces(text: str) -> str:
+    """日本語の文字どうしの間の空白(半角・全角)を除く。英字の名前の空白は残す。"""
+    return _JP_GAP.sub("", text)
+
+
+def to_sample_row(seller_id: str, seller: dict) -> dict:
+    """サンプルCSVと同じ列の1行(カテゴリー以外)。住所はサンプルに合わせて「お問い合わせ情報」側。"""
+    post = seller.get("companyPost") or seller.get("contactPost") or ""
+    return {
+        "URL": INFO_URL.format(seller_id=seller_id),
+        "会社名（商号）": seller.get("businessKind") or "",
+        "郵便番号": f"〒{post}" if post else "",
+        "住所": contact_address(seller) or seller.get("companyAddress") or "",
+        "代表者": squash_japanese_spaces(seller.get("companyPerson") or ""),  # サンプルは「伊藤憲博」(空白なし)
+        "ストア名": seller.get("name") or "",
+        "ストア名（フリガナ）": seller.get("nameKana") or "",
+        "運営責任者": seller.get("contactPerson") or "",
+        "お問い合わせ電話番号": seller.get("contactTel") or "",
+        "お問い合わせメールアドレス": seller.get("contactMail") or "",
+    }
 
 
 def fetch_info(session: requests.Session, seller_id: str) -> FetchResult:

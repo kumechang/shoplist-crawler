@@ -25,10 +25,13 @@ export YAHOO_APP_ID=取得したClientID
 ## 使い方
 
 ```bash
-# 1. 店舗IDを集める(キーワードを増やすほど店舗が増える)
-shoplist collect --queries-file queries.example.txt --all-sorts
+# 1. カテゴリーごとに店舗IDを集める(推奨)。デフォルトは 13457=ファッション の2階層目/3階層目
+shoplist collect-categories --list-only      # まず対象カテゴリーの一覧だけ確認
+shoplist collect-categories --max-minutes 60 # 実行。中断しても、再実行すると続きから再開
+shoplist collect-categories --root-id 2498   # 別のトップ階層(例: 食品)
 
-# 既にIDを知っている場合は手動で追加もできる
+# キーワードで集めることもできる / 既にIDを知っている場合は手動で追加
+shoplist collect --queries-file queries.example.txt --all-sorts
 shoplist add-ids lafitte
 
 # 2. 会社概要ページを取得する(Ctrl-Cで止めても、再実行で続きから)
@@ -36,10 +39,22 @@ shoplist fetch
 shoplist fetch --limit 100          # 試しに100件だけ
 shoplist fetch --retry-errors       # 前回エラーだった店舗をやり直す
 
-# 3. CSVに出力 / 進捗確認
-shoplist export --out shops.csv
+# 3. CSVに出力 / 進捗確認 / 数件を表示
+shoplist export --out shops.csv     # 下記の11列。店舗×カテゴリーごとに1行
+shoplist export --format full       # 全項目(1店舗1行)
 shoplist status
+shoplist sample -n 5
 ```
+
+### 出力するCSVの列
+
+`URL, 会社名（商号）, 郵便番号, 住所, 代表者, ストア名, ストア名（フリガナ）, 運営責任者, お問い合わせ電話番号, お問い合わせメールアドレス, カテゴリー`
+
+- `カテゴリー` は `メンズファッション/その他メンズファッション` のように「2階層目/3階層目」(トップの「ファッション」は省略)。
+  1つの店舗が複数カテゴリーで見つかった場合は、カテゴリーごとに行を分けます。カテゴリーが不明な店舗(キーワード検索や手動追加)は空欄の1行です。
+- `住所` はページの「お問い合わせ情報」の住所(建物名まで)です。`代表者` は日本語の姓名の間の空白を除いています(例: `伊藤憲博`)。
+- 閉店して404になった店舗は取得できないので、CSVには出ません。
+- `カテゴリー` は、そのカテゴリーの商品検索(各並び順の先頭999件まで)に出てきた店舗です。商品数が多いカテゴリーでは、全店舗は拾えません。`--all-sorts` で並び順を変えて取りこぼしを減らせます。
 
 データは `shops.db`(SQLite)に保存されます(`--db` で変更可)。`raw_json` に店舗情報の生データを保存しているので、
 後から別の項目が欲しくなってもページを再取得する必要はありません。
@@ -55,8 +70,8 @@ shoplist status
 | `YAHOO_APP_ID` | Yahoo!デベロッパーネットワークのClient ID |
 | `DB_PASSPHRASE` | データ暗号化用のパスフレーズ(長いランダム文字列。控えを必ず保管) |
 
-**流れ**: 前回のArtifactから `shops.db` を復元 → (初回、または手動実行で `collect` にチェックを入れたとき)店舗ID収集 → `fetch` で最大 `limit` 件(既定5000)取得 → CSV出力 → **暗号化して**Artifactに保存。
-5時間を超えそうなら途中で打ち切って保存し、次回は続きから再開します。
+**流れ**: 前回のArtifactから `shops.db` を復元 → `collect-categories` でカテゴリーごとに店舗IDを収集(最大100分。進捗は保存され、毎回続きから) → `fetch` で最大 `limit` 件(既定5000)取得(最大3.5時間) → CSV出力 → **暗号化して**Artifactに保存。
+手動実行では、トップ階層のカテゴリID(`root_id`、既定13457=ファッション)と全並び順(`all_sorts`)を指定できます。
 
 **重要: このリポジトリはpublicです。** Artifactは誰でもダウンロードできるため、代表者名・メール・電話番号を含むDBとCSVは
 `DB_PASSPHRASE` で暗号化したものだけを保存します。平文のデータはコミットもアップロードもしないでください。
