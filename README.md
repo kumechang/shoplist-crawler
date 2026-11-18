@@ -101,7 +101,7 @@ shoplist sample -n 5
 **流れ**: 前回のArtifactから `shops.db` を復元 → ① `collect-categories`(最大100分) → ② `fetch`(最大2時間、既定で最大5000店舗) → ③ `refresh`(最大90分、既定で最大3000店舗) → CSV・変更履歴を出力 → **暗号化して**Artifactに保存。
 どのステップも進捗を保存して打ち切り、次回は続きから再開します。
 
-手動実行の入力: `root_id`(トップ階層のカテゴリID。既定13457=ファッション)、`limit`(②の最大件数)、`refresh_limit` / `refresh_days`(③の最大件数 / 何日経った店舗を対象にするか)、`recrawl_days`(①のやり直し間隔)。
+手動実行の入力: `collect_minutes`(①の最大時間。動作確認では5などに)、`root_id`(トップ階層のカテゴリID。既定13457=ファッション)、`limit`(②の最大件数)、`refresh_limit` / `refresh_days`(③の最大件数 / 何日経った店舗を対象にするか)、`recrawl_days`(①のやり直し間隔)。
 収集に何日かかるかは、`shoplist collect-categories --estimate` の見積もりで確認してください。
 1回の実行で取れる店舗数の目安(1店舗あたり約2.9秒): ② 約2,500店舗 / ③ 約1,900店舗。1日2回なら、③は30日で約11万店舗分あります。
 

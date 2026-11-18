@@ -9,6 +9,10 @@ on:
         description: "店舗を集めるトップ階層のジャンルカテゴリID (13457=ファッション)"
         type: string
         default: "13457"
+      collect_minutes:
+        description: "新店舗の発見に使う最大時間(分)。動作確認では5など短くする"
+        type: string
+        default: "100"
       limit:
         description: "新店舗の情報取得: 今回取得する最大店舗数"
         type: string
@@ -44,6 +48,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       YAHOO_APP_ID: ${{ secrets.YAHOO_APP_ID }}
       DB_PASSPHRASE: ${{ secrets.DB_PASSPHRASE }}
+      COLLECT_MINUTES: ${{ inputs.collect_minutes || '100' }}
       LIMIT: ${{ inputs.limit || '5000' }}
       REFRESH_LIMIT: ${{ inputs.refresh_limit || '3000' }}
       REFRESH_DAYS: ${{ inputs.refresh_days || '30' }}
@@ -76,7 +81,7 @@ jobs:
         # 回数制限(429)などで失敗しても、集めた分は保存されているので次のステップは続ける
         continue-on-error: true
         timeout-minutes: 115
-        run: shoplist collect-categories --root-id "$ROOT_ID" --recrawl-days "$RECRAWL_DAYS" --max-minutes 100
+        run: shoplist collect-categories --root-id "$ROOT_ID" --recrawl-days "$RECRAWL_DAYS" --max-minutes "$COLLECT_MINUTES"
 
       # ② 新店舗の情報取得: まだ会社概要ページを取得していない店舗を取得する
       - name: "2. Fetch info of new stores"
