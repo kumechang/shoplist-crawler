@@ -9,7 +9,7 @@ Yahoo!ショッピングの各店舗の「会社概要」ページ
 |---|---|---|---|
 | ① 新店舗の発見 | カテゴリー×価格帯で商品検索し、店舗IDを集める | `collect-categories` | 初回に全体を検索。以後は `--recrawl-days`(既定30日)より古い検索をやり直す |
 | ② 新店舗の情報取得 | まだ会社概要を取得していない店舗を取得する | `fetch` | 未取得の店舗がある間 |
-| ③ 既存店舗の情報更新 | 取得から日数が経った店舗を取り直し、変更・閉店を記録する | `refresh` | 取得から `--older-than-days`(既定90日)が経った店舗 |
+| ③ 既存店舗の情報更新 | 取得から日数が経った店舗を取り直し、変更・閉店を記録する | `refresh` | 取得から `--older-than-days`(既定30日)が経った店舗 |
 
 ①で見つけた店舗が②で取得され、③が定期的に取り直します。出力は `export`(CSV)、`changes`(変更履歴)です。
 
@@ -46,9 +46,9 @@ shoplist fetch
 shoplist fetch --limit 100          # 試しに100件だけ
 shoplist fetch --retry-errors       # 前回エラーだった店舗をやり直す
 
-# ③ 既存店舗の情報更新(取得から90日以上が経った店舗を、古い順に取り直す)
+# ③ 既存店舗の情報更新(取得から30日以上が経った店舗を、古い順に取り直す)
 shoplist refresh --limit 500
-shoplist refresh --older-than-days 30
+shoplist refresh --older-than-days 10
 shoplist changes --since-days 30    # 検出した変更の履歴(新しい順)。--out changes.csv でCSVに全件出力
 
 # 出力 / 進捗確認 / 数件を表示
@@ -68,7 +68,7 @@ shoplist sample -n 5
   - 取得できていた店舗が404になったら **`closed`(閉店・削除)** にします。最後に取れた内容は消さずに残し、`export --include-closed` で出せます。
   - 閉店した店舗が再びページを持ったら、`ok` に戻して「状態の変更」を記録します。
   - 取得に失敗した店舗は前回のデータを残し、次回また対象になります。
-  - 閉店・不明の店舗の再確認は、営業中の店舗の4倍の間隔(既定360日)です。
+  - 閉店・不明の店舗の再確認は、営業中の店舗の4倍の間隔(既定120日)です。
 
 ### 出力するCSVの列
 
@@ -89,7 +89,7 @@ shoplist sample -n 5
 
 ## GitHub Actionsで動かす
 
-`.github/workflows/crawl.yml` が、週1回(月曜 12:17 JST)と手動実行(Actions タブ → crawl → Run workflow)で動きます。
+`.github/workflows/crawl.yml` が、毎日2回(12:17 JST と 0:17 JST)と手動実行(Actions タブ → crawl → Run workflow)で動きます。
 
 **初回設定**: リポジトリの Settings → Secrets and variables → Actions に2つ登録してください。
 
@@ -102,7 +102,8 @@ shoplist sample -n 5
 どのステップも進捗を保存して打ち切り、次回は続きから再開します。
 
 手動実行の入力: `root_id`(トップ階層のカテゴリID。既定13457=ファッション)、`limit`(②の最大件数)、`refresh_limit` / `refresh_days`(③の最大件数 / 何日経った店舗を対象にするか)、`recrawl_days`(①のやり直し間隔)。
-収集に何日かかるかは、`shoplist collect-categories --estimate` の見積もりで確認してください(週1回の実行だと長くかかる場合は、`crawl.yml` の `cron` を毎日に変えられます)。
+収集に何日かかるかは、`shoplist collect-categories --estimate` の見積もりで確認してください。
+1回の実行で取れる店舗数の目安(1店舗あたり約2.9秒): ② 約2,500店舗 / ③ 約1,900店舗。1日2回なら、③は30日で約11万店舗分あります。
 
 **重要: このリポジトリはpublicです。** Artifactは誰でもダウンロードできるため、代表者名・メール・電話番号を含むDBとCSVは
 `DB_PASSPHRASE` で暗号化したものだけを保存します。平文のデータはコミットもアップロードもしないでください。
@@ -125,7 +126,7 @@ shoplist sample -n 5
 ```
 
 注意:
-- Artifactの保存期間は最大90日です。週1回の実行で毎回更新されるので消えませんが、90日以上実行が止まるとデータが失われます。
+- Artifactの保存期間は最大90日です。毎日の実行で毎回更新されるので消えませんが、90日以上実行が止まるとデータが失われます。
 - publicリポジトリでは、60日間リポジトリへの活動がないとスケジュール実行が自動で無効になります。止まったらActionsタブから再有効化してください。
 - GitHubのサーバーのIPからだと、Yahoo側にアクセスを弾かれる可能性があります。まず手動実行で、`limit` を小さく(例: 20)して試してください。
 

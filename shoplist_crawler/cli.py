@@ -274,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.set_defaults(func=cmd_fetch)
 
     r = sub.add_parser("refresh", help="取得から日数が経った店舗を取り直して、変更・閉店を記録する")
-    r.add_argument("--older-than-days", type=float, default=90, help="取得からこの日数が経った店舗が対象 (default: 90)")
+    r.add_argument("--older-than-days", type=float, default=30, help="取得からこの日数が経った店舗が対象 (default: 30)")
     r.add_argument("--delay", type=float, default=2.0, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ")
     r.add_argument("--limit", type=int, help="今回チェックする最大件数")
     r.set_defaults(func=cmd_refresh)
