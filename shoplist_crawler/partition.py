@@ -5,6 +5,7 @@
 3. それでも超える価格帯は半分ずつに割っていく(価格の両端は含む。重なりなし)。
 4. 1円刻みまで割っても999件を超える価格帯(同じ価格の商品が大量)だけは、並び順を変えて検索する。
 進捗はDBに保存するので、中断しても続きから再開できる。
+recrawl_days を指定すると、その日数より古い進捗は検索し直す(あとから増えた店舗を見つけるため)。
 """
 from __future__ import annotations
 
@@ -37,10 +38,12 @@ def unit_key(category_id: int, lo: int | None, hi: int | None) -> str:
 
 class Crawler:
     def __init__(self, conn, session, appid, *, sort="-score", page_size=api.PAGE_SIZE, delay=2.0,
-                 deadline: float | None = None, sleep=time.sleep, log=print):
+                 deadline: float | None = None, recrawl_days: float | None = None,
+                 sleep=time.sleep, log=print):
         self.conn, self.session, self.appid = conn, session, appid
         self.sort, self.page_size, self.delay = sort, page_size, delay
         self.deadline, self.sleep, self.log = deadline, sleep, log
+        self.recrawl_days = recrawl_days  # この日数より古い進捗は「未実施」とみなして検索し直す(新店舗の発見)
         self.new_sellers = 0
         self.saturated = 0  # 同価格の商品が999件超で、並び順の違いで集めた価格帯の数
 
@@ -71,7 +74,7 @@ class Crawler:
 
     def _unit(self, target, lo, hi) -> None:
         key = unit_key(target.category_id, lo, hi)
-        state = db.unit_state(self.conn, key)
+        state = db.unit_state(self.conn, key, self.recrawl_days)
         if state == "done":
             return
         if state != "split":

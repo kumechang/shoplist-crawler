@@ -49,6 +49,28 @@ SAMPLE_HEADERS = [
 ]
 
 
+# 更新チェックで変更を記録する項目: (sellerのキー, 表示名)。評価の点数・件数は頻繁に変わるので対象外
+TRACKED_FIELDS = [
+    ("name", "ストア名"), ("nameKana", "ストア名（フリガナ）"), ("businessKind", "会社名（商号）"),
+    ("companyPost", "郵便番号"), ("companyAddress", "会社の住所"), ("companyPerson", "代表者"),
+    ("contactPerson", "運営責任者"), ("contactPost", "お問い合わせ郵便番号"), ("contactPref", "お問い合わせ都道府県"),
+    ("contactCity", "お問い合わせ市区町村"), ("contactAddr", "お問い合わせ番地"), ("contactBuild", "お問い合わせ建物名"),
+    ("contactTel", "お問い合わせ電話番号"), ("contactFax", "お問い合わせFAX"), ("contactMail", "お問い合わせメールアドレス"),
+    ("businessDate", "営業日/時間"), ("description", "ストア紹介"), ("isOpen", "営業中"),
+]
+
+
+def diff_sellers(old: dict, new: dict) -> list[tuple[str, str, str]]:
+    """TRACKED_FIELDS のうち値が変わったものを (表示名, 変更前, 変更後) で返す。"""
+    out = []
+    for key, label in TRACKED_FIELDS:
+        o, n = old.get(key), new.get(key)
+        o, n = "" if o is None else str(o), "" if n is None else str(n)
+        if o != n:
+            out.append((label, o, n))
+    return out
+
+
 @dataclass
 class FetchResult:
     status: str  # ok / not_found / error

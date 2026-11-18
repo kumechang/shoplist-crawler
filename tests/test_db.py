@@ -18,7 +18,7 @@ def test_save_result_and_retry_errors(tmp_path, info_html):
     db.save_result(conn, "b", "error", None, "HTTP 503")
     assert db.pending_ids(conn) == ["c"]
     assert db.pending_ids(conn, retry_errors=True) == ["b", "c"]
-    assert db.counts(conn) == {"total": 3, "pending": 1, "ok": 1, "not_found": 0, "error": 1}
+    assert db.counts(conn) == {"total": 3, "pending": 1, "ok": 1, "closed": 0, "not_found": 0, "error": 1}
 
 
 def _seed(tmp_path, info_html):

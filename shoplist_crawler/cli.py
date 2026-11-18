@@ -82,14 +82,14 @@ def cmd_collect_categories(args) -> int:
 
     crawler = partition.Crawler(
         conn, session, appid, sort=args.sort, page_size=args.page_size, delay=args.delay,
-        deadline=deadline, log=lambda m: print(m, flush=True),
+        deadline=deadline, recrawl_days=args.recrawl_days or None, log=lambda m: print(m, flush=True),
     )
     try:
         for i, t in enumerate(targets, 1):
             print(f"--- カテゴリ {i}/{len(targets)}: {t.name} (id={t.category_id}) ---", flush=True)
             crawler.crawl(t)
     except partition.Deadline:
-        print("時間切れのため中断します(進捗は保存済み。次回は続きから再開します)")
+        print(f"時間切れのため中断します(進捗は保存済み。次回は続きから再開します)。今回の新規店舗 {crawler.new_sellers} 件")
         print(db.counts(conn))
         return 0
     except api.ApiError as e:
@@ -99,7 +99,7 @@ def cmd_collect_categories(args) -> int:
             print("回数制限(429)に達したため中断します。時間を置いて再実行してください", file=sys.stderr)
             return 3
         return 1
-    print(f"全カテゴリの検索が完了しました (同価格の商品が多く並び順で補った価格帯: {crawler.saturated})")
+    print(f"全カテゴリの検索が完了しました。今回の新規店舗 {crawler.new_sellers} 件 (同価格の商品が多く並び順で補った価格帯: {crawler.saturated})")
     print(db.counts(conn))
     return 0
 
@@ -134,27 +134,82 @@ def cmd_add_ids(args) -> int:
     return 0
 
 
-def cmd_fetch(args) -> int:
-    conn = db.connect(args.db)
-    targets = db.pending_ids(conn, retry_errors=args.retry_errors, limit=args.limit)
-    print(f"取得対象 {len(targets)} 件")
+MAX_CONSECUTIVE_ERRORS = 20
+
+
+def _run_fetch_loop(conn, targets: list[str], save, delay: float) -> int:
+    """店舗ごとに会社概要ページを取得して save(...) で保存する。fetch / refresh の共通処理。
+
+    Ctrl-C(や timeout -s INT)で止めても取得済み分は保存済み。エラーが続く場合(ブロックやページ構造の変更)は、
+    叩き続けないよう途中で止める。
+    """
     session = new_session()
+    errors = 0
     try:
         for i, sid in enumerate(targets, 1):
             r = info.fetch_info(session, sid)
-            db.save_result(conn, sid, r.status, r.seller, r.error)
+            label = save(conn, sid, r)
             detail = f" {r.error}" if r.error else ""
-            print(f"[{i}/{len(targets)}] {sid}: {r.status}{detail}", flush=True)
-            time.sleep(args.delay + random.random() * args.delay * 0.5)
+            print(f"[{i}/{len(targets)}] {sid}: {label}{detail}", flush=True)
+            errors = errors + 1 if r.status == "error" else 0
+            if errors >= MAX_CONSECUTIVE_ERRORS:
+                print(f"エラーが{errors}回続いたため中断します(アクセス制限やページ構造の変更の可能性)", file=sys.stderr)
+                return 1
+            time.sleep(delay + random.random() * delay * 0.5)
     except KeyboardInterrupt:
         print("\n中断しました(取得済み分は保存済み。再度実行すると続きから再開します)")
+    return 0
+
+
+def _save_new(conn, sid, r) -> str:
+    db.save_result(conn, sid, r.status, r.seller, r.error)
+    return r.status
+
+
+def _save_refresh(conn, sid, r) -> str:
+    return db.save_refresh(conn, sid, r.status, r.seller, r.error)
+
+
+def cmd_fetch(args) -> int:
+    """② 新店舗の情報取得: まだ取得していない店舗の会社概要ページを取得する。"""
+    conn = db.connect(args.db)
+    targets = db.pending_ids(conn, retry_errors=args.retry_errors, limit=args.limit)
+    print(f"取得対象 {len(targets)} 件")
+    rc = _run_fetch_loop(conn, targets, _save_new, args.delay)
     print(db.counts(conn))
+    return rc
+
+
+def cmd_refresh(args) -> int:
+    """③ 既存店舗の情報更新: 取得から日数が経った店舗を取り直し、変更・閉店を記録する。"""
+    conn = db.connect(args.db)
+    targets = db.refresh_ids(conn, args.older_than_days, limit=args.limit)
+    print(f"更新チェック対象 {len(targets)} 件 ({args.older_than_days:g}日より古い営業中の店舗 / 閉店・不明は4倍の間隔)")
+    rc = _run_fetch_loop(conn, targets, _save_refresh, args.delay)
+    print(db.counts(conn))
+    print("直近30日:", db.recent_activity(conn, 30))
+    return rc
+
+
+def cmd_changes(args) -> int:
+    conn = db.connect(args.db)
+    if args.out:
+        n = db.export_changes(conn, args.out, args.since_days)
+        print(f"直近{args.since_days:g}日の変更 {n} 件を {args.out} に出力しました")
+        return 0
+    rows = list(db.iter_changes(conn, args.since_days))
+    if not rows:
+        print(f"直近{args.since_days:g}日の変更はありません")
+    for r in rows[: args.n]:
+        print(f"{r['変更日時']}  {r['URL']}  {r['項目']}: {r['変更前']!r} → {r['変更後']!r}")
+    if len(rows) > args.n:
+        print(f"... 他 {len(rows) - args.n} 件 (--out で全件をCSVに出力できます)")
     return 0
 
 
 def cmd_export(args) -> int:
     conn = db.connect(args.db)
-    n = db.export_csv(conn, args.out, args.format)
+    n = db.export_csv(conn, args.out, args.format, args.include_closed)
     print(f"{n} 件を {args.out} に出力しました")
     return 0
 
@@ -173,7 +228,9 @@ def cmd_sample(args) -> int:
 
 
 def cmd_status(args) -> int:
-    print(db.counts(db.connect(args.db)))
+    conn = db.connect(args.db)
+    print(db.counts(conn))
+    print("直近30日:", db.recent_activity(conn, 30))
     return 0
 
 
@@ -199,6 +256,8 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("--page-size", type=int, default=api.PAGE_SIZE, help="1リクエストの商品数(default: 50)")
     cc.add_argument("--delay", type=float, default=2.0, help="APIリクエスト間隔(秒)")
     cc.add_argument("--estimate", action="store_true", help="各カテゴリーの商品件数を調べて、必要な時間を見積もるだけ")
+    cc.add_argument("--recrawl-days", type=float, default=30,
+                    help="この日数より古い検索の進捗は検索し直して、新しい店舗を見つける (default: 30, 0=やり直さない)")
     cc.add_argument("--max-minutes", type=float, help="この時間を過ぎたら次のカテゴリー前で中断(再実行で続きから)")
     cc.add_argument("--list-only", action="store_true", help="対象カテゴリーを表示するだけ(商品検索はしない)")
     cc.set_defaults(func=cmd_collect_categories)
@@ -214,10 +273,23 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--retry-errors", action="store_true", help="前回エラーだった店舗も再取得")
     f.set_defaults(func=cmd_fetch)
 
+    r = sub.add_parser("refresh", help="取得から日数が経った店舗を取り直して、変更・閉店を記録する")
+    r.add_argument("--older-than-days", type=float, default=90, help="取得からこの日数が経った店舗が対象 (default: 90)")
+    r.add_argument("--delay", type=float, default=2.0, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ")
+    r.add_argument("--limit", type=int, help="今回チェックする最大件数")
+    r.set_defaults(func=cmd_refresh)
+
+    ch = sub.add_parser("changes", help="更新チェックで見つかった変更の履歴を表示/CSV出力する")
+    ch.add_argument("--since-days", type=float, default=30)
+    ch.add_argument("-n", type=int, default=30, help="画面に表示する最大件数")
+    ch.add_argument("--out", help="全件をこのCSVに出力する")
+    ch.set_defaults(func=cmd_changes)
+
     e = sub.add_parser("export", help="取得済みの店舗情報をCSVに出力する")
     e.add_argument("--out", default="shops.csv")
     e.add_argument("--format", choices=("sample", "full"), default="sample",
                    help="sample=指定の列(店舗×カテゴリーごとに1行) / full=全項目(1店舗1行)")
+    e.add_argument("--include-closed", action="store_true", help="閉店・削除を検出した店舗(最後に取れた内容)も出力に含める")
     e.set_defaults(func=cmd_export)
 
     m = sub.add_parser("sample", help="取得済みの店舗をランダムに数件表示する")

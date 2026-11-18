@@ -10,9 +10,21 @@ on:
         type: string
         default: "13457"
       limit:
-        description: "今回取得する最大店舗数"
+        description: "新店舗の情報取得: 今回取得する最大店舗数"
         type: string
         default: "5000"
+      refresh_limit:
+        description: "既存店舗の更新チェック: 今回チェックする最大店舗数"
+        type: string
+        default: "3000"
+      refresh_days:
+        description: "取得からこの日数が経った店舗を更新チェックする"
+        type: string
+        default: "90"
+      recrawl_days:
+        description: "この日数より古い検索の進捗は検索し直して、新店舗を見つける"
+        type: string
+        default: "30"
 
 permissions:
   contents: read
@@ -33,6 +45,9 @@ jobs:
       YAHOO_APP_ID: ${{ secrets.YAHOO_APP_ID }}
       DB_PASSPHRASE: ${{ secrets.DB_PASSPHRASE }}
       LIMIT: ${{ inputs.limit || '5000' }}
+      REFRESH_LIMIT: ${{ inputs.refresh_limit || '3000' }}
+      REFRESH_DAYS: ${{ inputs.refresh_days || '90' }}
+      RECRAWL_DAYS: ${{ inputs.recrawl_days || '30' }}
       ROOT_ID: ${{ inputs.root_id || '13457' }}
     steps:
       - uses: actions/checkout@v4
@@ -55,27 +70,39 @@ jobs:
         id: restore
         run: scripts/restore_db.sh
 
-      - name: Collect seller IDs by category
-        # カテゴリーごとに商品検索して、店舗IDとカテゴリーを集める。進捗はDBに保存され、毎回続きから再開する
-        # (全カテゴリー完了後は何もしない)。回数制限(429)などで失敗しても、fetchは続ける
+      # ① 新店舗の発見: カテゴリー×価格帯ごとに商品検索して店舗IDを集める。進捗はDBに保存され毎回続きから再開し、
+      #    RECRAWL_DAYS より古い進捗は検索し直す(あとから増えた店舗を見つけるため)
+      - name: "1. Discover new stores"
+        # 回数制限(429)などで失敗しても、集めた分は保存されているので次のステップは続ける
         continue-on-error: true
         timeout-minutes: 115
-        run: shoplist collect-categories --root-id "$ROOT_ID" --max-minutes 100
+        run: shoplist collect-categories --root-id "$ROOT_ID" --recrawl-days "$RECRAWL_DAYS" --max-minutes 100
 
-      - name: Fetch store info
-        # 3.5時間で打ち切る(Ctrl-C相当で止まり、取得済み分は保存済み)。次回は続きから。
-        # (collect 最大100分 + fetch 210分 + 前後の処理が、ジョブの上限345分に収まるようにしている)
-        timeout-minutes: 225
+      # ② 新店舗の情報取得: まだ会社概要ページを取得していない店舗を取得する
+      - name: "2. Fetch info of new stores"
+        # Ctrl-C相当(INT)で打ち切る。取得済み分は保存済みで、次回は続きから。
+        timeout-minutes: 135
         run: |
-          timeout -s INT 12600 shoplist fetch --limit "$LIMIT" || [ $? -eq 124 ]
+          timeout -s INT 7200 shoplist fetch --limit "$LIMIT" || [ $? -eq 124 ]
+
+      # ③ 既存店舗の情報更新: 取得から REFRESH_DAYS 日が経った店舗を古い順に取り直し、変更・閉店を記録する
+      #    (collect 100分 + fetch 120分 + refresh 90分 + 前後の処理が、ジョブの上限345分に収まる)
+      - name: "3. Refresh existing stores"
+        timeout-minutes: 105
+        run: |
+          timeout -s INT 5400 shoplist refresh --older-than-days "$REFRESH_DAYS" --limit "$REFRESH_LIMIT" || [ $? -eq 124 ]
 
       - name: Export, encrypt
         if: always() && hashFiles('shops.db') != ''
         run: |
           mkdir -p out
           shoplist export --out shops.csv
+          shoplist export --format full --include-closed --out shops_full.csv
+          shoplist changes --since-days 3650 --out changes.csv
           scripts/crypt.sh enc shops.db out/shops.db.enc
           scripts/crypt.sh enc shops.csv out/shops.csv.enc
+          scripts/crypt.sh enc shops_full.csv out/shops_full.csv.enc
+          scripts/crypt.sh enc changes.csv out/changes.csv.enc
           echo '### 進捗' >> "$GITHUB_STEP_SUMMARY"
           shoplist status >> "$GITHUB_STEP_SUMMARY"
 
