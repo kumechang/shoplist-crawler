@@ -61,10 +61,9 @@ def test_export_full_format(tmp_path, info_html):
     assert rows[0]["company_address"].startswith("東京都千代田区")
 
 
-def test_crawl_progress(tmp_path):
+def test_crawl_unit_progress(tmp_path):
     conn = db.connect(str(tmp_path / "t.db"))
-    assert not db.crawl_done(conn, 1, "-score")
-    db.mark_crawled(conn, 1, ["-score", "+price"])
-    db.mark_crawled(conn, 1, ["-score"])  # 二重登録しても落ちない
-    assert db.crawl_done(conn, 1, "-score") and db.crawl_done(conn, 1, "+price")
-    assert not db.crawl_done(conn, 1, "-price") and not db.crawl_done(conn, 2, "-score")
+    assert db.unit_state(conn, "1:all") is None
+    db.set_unit(conn, "1:all", "split", 5000)
+    db.set_unit(conn, "1:all", "done", 5000)  # 上書きできる
+    assert db.unit_state(conn, "1:all") == "done" and db.unit_state(conn, "1:0-499") is None

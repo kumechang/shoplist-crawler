@@ -1,6 +1,6 @@
 import pytest
 
-from shoplist_crawler import cli, db, info
+from shoplist_crawler import cli, db, info, partition
 from conftest import FakeResponse
 
 
@@ -83,56 +83,41 @@ def _hit(sid, leaf="その他メンズファッション", parents=None):
             "genreCategory": {"id": 9, "name": leaf, "depth": 3}}
 
 
-def test_collect_categories_saves_sellers_with_category_and_resumes(tmp_path, monkeypatch, capsys):
-    dbp = str(tmp_path / "t.db")
+def _patch_targets(monkeypatch, *targets):
     monkeypatch.setattr(cli.time, "sleep", lambda s: None)
-    monkeypatch.setattr(cli.categories, "list_targets",
-                        lambda *a, **k: [cli.categories.Target(9, 3, "その他メンズファッション")])
+    monkeypatch.setattr(partition.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cli.categories, "list_targets", lambda *a, **k: list(targets))
+
+
+def test_collect_categories_saves_sellers_with_category_and_resumes(tmp_path, monkeypatch):
+    dbp = str(tmp_path / "t.db")
+    _patch_targets(monkeypatch, cli.categories.Target(9, 3, "その他メンズファッション"))
     calls = []
 
-    def fake_pages(session, appid, *, genre_category_id, sort, delay):
-        calls.append((genre_category_id, sort))
+    def fake_pages(session, appid, **kw):
+        calls.append(kw["genre_category_id"])
         yield 2, [_hit("a"), _hit("b")]
 
     monkeypatch.setattr(cli.api, "iter_pages", fake_pages)
-    args = ["--db", dbp, "collect-categories", "--appid", "X", "--all-sorts"]
+    args = ["--db", dbp, "collect-categories", "--appid", "X"]
     assert cli.main(args) == 0
-    # 総件数2件(<999)なので全件取れた扱い → 他の並び順は検索しない
-    assert calls == [(9, "-score")]
+    assert calls == [9]  # 総件数2件(<=999)なので1回で完了
     conn = db.connect(dbp)
     assert conn.execute("SELECT seller_id, category FROM seller_categories ORDER BY 1").fetchall() == [
         ("a", "メンズファッション/その他メンズファッション"), ("b", "メンズファッション/その他メンズファッション")]
     assert db.counts(conn)["total"] == 2
-    # 再実行しても何も検索しない(再開機能)
-    assert cli.main(args) == 0
-    assert calls == [(9, "-score")]
-
-
-def test_collect_categories_incomplete_category_runs_each_sort(tmp_path, monkeypatch):
-    dbp = str(tmp_path / "t.db")
-    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
-    monkeypatch.setattr(cli.categories, "list_targets", lambda *a, **k: [cli.categories.Target(9, 3, "x")])
-    calls = []
-
-    def fake_pages(session, appid, *, genre_category_id, sort, delay):
-        calls.append(sort)
-        yield 50000, [_hit(f"s-{sort}")]  # 999件を超える → 並び順を変えて追加で検索
-
-    monkeypatch.setattr(cli.api, "iter_pages", fake_pages)
-    assert cli.main(["--db", dbp, "collect-categories", "--appid", "X", "--all-sorts"]) == 0
-    assert calls == list(cli.api.SORTS)
+    assert cli.main(args) == 0  # 再実行しても何も検索しない(再開機能)
+    assert calls == [9]
 
 
 def test_collect_categories_429_keeps_partial_and_stops(tmp_path, monkeypatch):
     dbp = str(tmp_path / "t.db")
-    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
-    monkeypatch.setattr(cli.categories, "list_targets",
-                        lambda *a, **k: [cli.categories.Target(1, 3, "c1"), cli.categories.Target(2, 3, "c2")])
+    _patch_targets(monkeypatch, cli.categories.Target(1, 3, "c1"), cli.categories.Target(2, 3, "c2"))
     calls = []
 
-    def fake_pages(session, appid, *, genre_category_id, sort, delay):
-        calls.append(genre_category_id)
-        yield 5000, [_hit("a")]
+    def fake_pages(session, appid, **kw):
+        calls.append(kw["genre_category_id"])
+        yield 500, [_hit("a")]
         raise cli.api.ApiError("HTTP 429", 429)
 
     monkeypatch.setattr(cli.api, "iter_pages", fake_pages)
@@ -140,11 +125,19 @@ def test_collect_categories_429_keeps_partial_and_stops(tmp_path, monkeypatch):
     assert calls == [1]  # 2つ目のカテゴリーは叩かない
     conn = db.connect(dbp)
     assert db.counts(conn)["total"] == 1  # それまでの分は保存
-    assert not db.crawl_done(conn, 1, "-score")  # 未完了なので次回やり直す
+    assert db.unit_state(conn, "1:all") is None  # 未完了なので次回やり直す
 
 
 def test_collect_categories_list_only(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli.categories, "list_targets", lambda *a, **k: [cli.categories.Target(9, 3, "名前")])
+    _patch_targets(monkeypatch, cli.categories.Target(9, 3, "名前"))
     monkeypatch.setattr(cli.api, "iter_pages", lambda *a, **k: pytest.fail("検索してはいけない"))
     assert cli.main(["--db", str(tmp_path / "t.db"), "collect-categories", "--appid", "X", "--list-only"]) == 0
     assert "9\t3\t名前" in capsys.readouterr().out
+
+
+def test_collect_categories_estimate(tmp_path, monkeypatch, capsys):
+    _patch_targets(monkeypatch, cli.categories.Target(1, 3, "c1"), cli.categories.Target(2, 3, "c2"))
+    monkeypatch.setattr(cli.api, "iter_pages", lambda *a, **k: iter([(1000, []) if k["genre_category_id"] == 1 else (2000, [])]))
+    assert cli.main(["--db", str(tmp_path / "t.db"), "collect-categories", "--appid", "X", "--estimate"]) == 0
+    out = capsys.readouterr().out
+    assert "c1: 1,000 件" in out and "合計 約3,000 件" in out and "約66 回" in out

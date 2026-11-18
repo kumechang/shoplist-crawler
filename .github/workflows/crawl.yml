@@ -9,10 +9,6 @@ on:
         description: "店舗を集めるトップ階層のジャンルカテゴリID (13457=ファッション)"
         type: string
         default: "13457"
-      all_sorts:
-        description: "全ての並び順で検索する(取りこぼしが減る代わりに時間がかかる)"
-        type: boolean
-        default: false
       limit:
         description: "今回取得する最大店舗数"
         type: string
@@ -38,7 +34,6 @@ jobs:
       DB_PASSPHRASE: ${{ secrets.DB_PASSPHRASE }}
       LIMIT: ${{ inputs.limit || '5000' }}
       ROOT_ID: ${{ inputs.root_id || '13457' }}
-      ALL_SORTS: ${{ inputs.all_sorts && '--all-sorts' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -65,7 +60,7 @@ jobs:
         # (全カテゴリー完了後は何もしない)。回数制限(429)などで失敗しても、fetchは続ける
         continue-on-error: true
         timeout-minutes: 115
-        run: shoplist collect-categories --root-id "$ROOT_ID" --max-minutes 100 $ALL_SORTS
+        run: shoplist collect-categories --root-id "$ROOT_ID" --max-minutes 100
 
       - name: Fetch store info
         # 3.5時間で打ち切る(Ctrl-C相当で止まり、取得済み分は保存済み)。次回は続きから。

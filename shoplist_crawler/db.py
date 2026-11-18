@@ -28,12 +28,13 @@ CREATE TABLE IF NOT EXISTS seller_categories (
     PRIMARY KEY (seller_id, category)
 );
 
--- カテゴリー検索の進捗(中断しても続きから再開するため)
-CREATE TABLE IF NOT EXISTS category_crawl (
-    category_id INTEGER NOT NULL,
-    sort        TEXT NOT NULL,
-    done_at     TEXT NOT NULL,
-    PRIMARY KEY (category_id, sort)
+-- カテゴリー検索の進捗。1ユニット = カテゴリー×価格帯(例 "2495:all", "2495:500-999")。
+-- state: done=全件取得済み / split=件数が多いので価格帯に分割済み(子の進捗を見る)
+CREATE TABLE IF NOT EXISTS crawl_units (
+    unit    TEXT PRIMARY KEY,
+    state   TEXT NOT NULL,
+    total   INTEGER,
+    done_at TEXT NOT NULL
 );
 """
 
@@ -67,16 +68,15 @@ def add_seller_categories(conn: sqlite3.Connection, pairs: Iterable[tuple[str, s
     conn.commit()
 
 
-def crawl_done(conn: sqlite3.Connection, category_id: int, sort: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM category_crawl WHERE category_id=? AND sort=?", (category_id, sort)
-    ).fetchone() is not None
+def unit_state(conn: sqlite3.Connection, unit: str) -> str | None:
+    row = conn.execute("SELECT state FROM crawl_units WHERE unit=?", (unit,)).fetchone()
+    return row[0] if row else None
 
 
-def mark_crawled(conn: sqlite3.Connection, category_id: int, sorts: Iterable[str]) -> None:
-    conn.executemany(
-        "INSERT OR IGNORE INTO category_crawl(category_id, sort, done_at) VALUES (?,?,?)",
-        [(category_id, s, _now()) for s in sorts],
+def set_unit(conn: sqlite3.Connection, unit: str, state: str, total: int | None) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO crawl_units(unit, state, total, done_at) VALUES (?,?,?,?)",
+        (unit, state, total, _now()),
     )
     conn.commit()
 

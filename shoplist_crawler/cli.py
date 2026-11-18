@@ -6,7 +6,7 @@ import random
 import sys
 import time
 
-from . import api, categories, db, info
+from . import api, categories, db, info, partition
 from .http import new_session
 
 
@@ -63,7 +63,6 @@ def cmd_collect_categories(args) -> int:
     if not appid:
         print("エラー: Client ID(appid)を --appid か環境変数 YAHOO_APP_ID で渡してください", file=sys.stderr)
         return 2
-    sorts = api.SORTS if args.all_sorts else (args.sort,)
     conn = db.connect(args.db)
     session = new_session()
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
@@ -78,48 +77,50 @@ def cmd_collect_categories(args) -> int:
         for t in targets:
             print(f"{t.category_id}\t{t.depth}\t{t.name}")
         return 0
+    if args.estimate:
+        return _estimate(session, appid, targets, args)
 
-    for i, t in enumerate(targets, 1):
-        for sort in sorts:
-            if db.crawl_done(conn, t.category_id, sort):
-                continue
-            if deadline and time.monotonic() > deadline:
-                print("時間切れのため中断します(進捗は保存済み。次回は続きから再開します)")
-                print(db.counts(conn))
-                return 0
-            found: list[tuple[str, str]] = []
-            pairs: list[tuple[str, str]] = []
-            total = None
-            err = None
-            try:
-                for total, hits in api.iter_pages(
-                    session, appid, genre_category_id=t.category_id, sort=sort, delay=args.delay
-                ):
-                    for hit in hits:
-                        seller = hit.get("seller") or {}
-                        sid = seller.get("sellerId")
-                        if sid:
-                            found.append((sid, seller.get("name") or ""))
-                            pairs.append((sid, categories.category_path(hit, t.depth, t.name)))
-            except api.ApiError as e:
-                err = e
-            # エラーでも、ここまでに集めた分は保存する
-            new = db.add_ids(conn, found)
-            db.add_seller_categories(conn, pairs)
-            if err:
-                print(f"[{i}/{len(targets)} {t.name} {sort}] APIエラー: {err} (それまでの新規 {new} 件は保存)", file=sys.stderr)
-                if err.status == 429:
-                    print("回数制限(429)に達したため中断します。時間を置いて再実行してください(続きから再開します)", file=sys.stderr)
-                    print(db.counts(conn))
-                    return 3
-                return 1
-            # 全件(先頭999件以内)取れたカテゴリは、他の並び順で検索しても増えないので完了扱いにする
-            complete = total is not None and total < api.MAX_POSITION
-            db.mark_crawled(conn, t.category_id, sorts if complete else [sort])
-            print(f"[{i}/{len(targets)} {t.name} {sort}] 商品 {total} 件 / 店舗 {len(set(x for x, _ in found))} 件中 新規 {new} 件", flush=True)
-            time.sleep(args.delay)
-    print("全カテゴリの検索が完了しました")
+    crawler = partition.Crawler(
+        conn, session, appid, sort=args.sort, page_size=args.page_size, delay=args.delay,
+        deadline=deadline, log=lambda m: print(m, flush=True),
+    )
+    try:
+        for i, t in enumerate(targets, 1):
+            print(f"--- カテゴリ {i}/{len(targets)}: {t.name} (id={t.category_id}) ---", flush=True)
+            crawler.crawl(t)
+    except partition.Deadline:
+        print("時間切れのため中断します(進捗は保存済み。次回は続きから再開します)")
+        print(db.counts(conn))
+        return 0
+    except api.ApiError as e:
+        print(f"APIエラー: {e} (ここまでの分は保存済み。再実行すると続きから再開します)", file=sys.stderr)
+        print(db.counts(conn))
+        if e.status == 429:
+            print("回数制限(429)に達したため中断します。時間を置いて再実行してください", file=sys.stderr)
+            return 3
+        return 1
+    print(f"全カテゴリの検索が完了しました (同価格の商品が多く並び順で補った価格帯: {crawler.saturated})")
     print(db.counts(conn))
+    return 0
+
+
+def _estimate(session, appid, targets, args) -> int:
+    """各カテゴリーの商品件数を1リクエストずつ調べて、必要なリクエスト数・時間を見積もる。"""
+    total_items = 0
+    for i, t in enumerate(targets, 1):
+        try:
+            total = next(api.iter_pages(session, appid, genre_category_id=t.category_id, page_size=1, delay=args.delay))[0]
+        except api.ApiError as e:
+            print(f"APIエラー: {e}", file=sys.stderr)
+            return 3 if e.status == 429 else 1
+        total_items += total
+        print(f"[{i}/{len(targets)}] {t.name}: {total:,} 件", flush=True)
+        time.sleep(args.delay)
+    pages = -(-total_items // args.page_size)
+    requests_n = int(pages * 1.1)  # 価格帯の分割に使う調査リクエスト分を1割と見込む
+    hours = requests_n * (args.delay + 0.3) / 3600  # 0.3秒は通信時間の目安
+    print(f"\n商品 合計 約{total_items:,} 件 → 必要なリクエスト 約{requests_n:,} 回 → 約{hours:,.1f} 時間 (間隔 {args.delay} 秒)")
+    print("(1日に動かせる時間で割ると、必要な日数の目安になります)")
     return 0
 
 
@@ -195,8 +196,9 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("--depth", type=int, default=3, help="何階層目のカテゴリーまで分けて検索するか (default: 3)")
     cc.add_argument("--appid", help="Yahoo!のClient ID (または環境変数 YAHOO_APP_ID)")
     cc.add_argument("--sort", default="-score", choices=api.SORTS)
-    cc.add_argument("--all-sorts", action="store_true", help="全ての並び順で検索(取りこぼしが減る代わりに時間がかかる)")
+    cc.add_argument("--page-size", type=int, default=api.PAGE_SIZE, help="1リクエストの商品数(default: 50)")
     cc.add_argument("--delay", type=float, default=2.0, help="APIリクエスト間隔(秒)")
+    cc.add_argument("--estimate", action="store_true", help="各カテゴリーの商品件数を調べて、必要な時間を見積もるだけ")
     cc.add_argument("--max-minutes", type=float, help="この時間を過ぎたら次のカテゴリー前で中断(再実行で続きから)")
     cc.add_argument("--list-only", action="store_true", help="対象カテゴリーを表示するだけ(商品検索はしない)")
     cc.set_defaults(func=cmd_collect_categories)
