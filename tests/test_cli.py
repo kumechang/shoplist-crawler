@@ -141,3 +141,40 @@ def test_collect_categories_estimate(tmp_path, monkeypatch, capsys):
     assert cli.main(["--db", str(tmp_path / "t.db"), "collect-categories", "--appid", "X", "--estimate"]) == 0
     out = capsys.readouterr().out
     assert "c1: 1,000 件" in out and "合計 約3,000 件" in out and "約66 回" in out
+
+
+def test_pending_count(tmp_path, capsys):
+    dbp = str(tmp_path / "t.db")
+    conn = db.connect(dbp)
+    db.add_ids(conn, [("a", ""), ("b", ""), ("c", "")])
+    db.save_result(conn, "a", "ok", {"name": "x"}, "")
+    assert cli.main(["--db", dbp, "pending-count"]) == 0
+    assert capsys.readouterr().out.strip() == "2"
+
+
+def test_done_file_only_when_discovery_finished(tmp_path, monkeypatch):
+    dbp = str(tmp_path / "t.db")
+    done = tmp_path / "discover.done"
+    _patch_targets(monkeypatch, cli.categories.Target(9, 3, "x"))
+    args = ["--db", dbp, "collect-categories", "--appid", "X", "--delay", "0", "--done-file", str(done)]
+
+    def finished(session, appid, **kw):
+        yield 2, [_hit("a")]
+
+    monkeypatch.setattr(cli.api, "iter_pages", finished)
+    assert cli.main(args) == 0 and done.exists()  # 最後まで終わった
+
+    # 前回のファイルは、今回終わらなければ残さない(時間切れ)
+    conn = db.connect(dbp)
+    conn.execute("DELETE FROM crawl_units")
+    conn.commit()
+    done.write_text("done\n")
+
+    def endless(session, appid, **kw):
+        yield 50000, [_hit("b")]
+
+    monkeypatch.setattr(cli.api, "iter_pages", endless)
+    clock = iter([0.0])  # 最初の1回(締め切りの計算)だけ0。以降は十分に先の時刻 → すぐ時間切れになる
+    monkeypatch.setattr(partition.time, "monotonic", lambda: next(clock, 10**12))
+    assert cli.main(args + ["--max-minutes", "1"]) == 0
+    assert not done.exists()

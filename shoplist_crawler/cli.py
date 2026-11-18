@@ -66,6 +66,8 @@ def cmd_collect_categories(args) -> int:
     conn = db.connect(args.db)
     session = new_session()
     deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
+    if args.done_file and os.path.exists(args.done_file):
+        os.remove(args.done_file)  # 今回の実行で最後まで終わったときだけ、あとで作り直す
 
     try:
         targets = categories.list_targets(session, appid, args.root_id, depth=args.depth, delay=args.delay)
@@ -104,6 +106,9 @@ def cmd_collect_categories(args) -> int:
             print("回数制限(429)に達したため中断します。時間を置いて再実行してください", file=sys.stderr)
             return 3
         return 1
+    if args.done_file:
+        with open(args.done_file, "w", encoding="utf-8") as f:
+            f.write("done\n")
     print(f"全カテゴリの検索が完了しました。今回の新規店舗 {crawler.new_sellers} 件 (同価格の商品が多く並び順で補った価格帯: {crawler.saturated})")
     print(db.counts(conn))
     return 0
@@ -232,6 +237,12 @@ def cmd_sample(args) -> int:
     return 0
 
 
+def cmd_pending_count(args) -> int:
+    """未取得(まだ会社概要を取得していない)の店舗数だけを表示する。連続実行の判断用。"""
+    print(db.counts(db.connect(args.db))["pending"])
+    return 0
+
+
 def cmd_status(args) -> int:
     conn = db.connect(args.db)
     print(db.counts(conn))
@@ -264,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("--recrawl-days", type=float, default=30,
                     help="この日数より古い検索の進捗は検索し直して、新しい店舗を見つける (default: 30, 0=やり直さない)")
     cc.add_argument("--max-minutes", type=float, help="この時間を過ぎたら次のカテゴリー前で中断(再実行で続きから)")
+    cc.add_argument("--done-file", help="全カテゴリの検索が最後まで終わったときだけ、このファイルを作る(連続実行の判断用)")
     cc.add_argument("--list-only", action="store_true", help="対象カテゴリーを表示するだけ(商品検索はしない)")
     cc.set_defaults(func=cmd_collect_categories)
 
@@ -300,6 +312,9 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("sample", help="取得済みの店舗をランダムに数件表示する")
     m.add_argument("-n", type=int, default=5)
     m.set_defaults(func=cmd_sample)
+
+    pc = sub.add_parser("pending-count", help="未取得の店舗数だけを表示する")
+    pc.set_defaults(func=cmd_pending_count)
 
     s = sub.add_parser("status", help="進捗を表示する")
     s.set_defaults(func=cmd_status)
