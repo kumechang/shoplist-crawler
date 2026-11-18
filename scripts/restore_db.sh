@@ -4,7 +4,7 @@
 set -uo pipefail
 : "${GITHUB_OUTPUT:=/dev/null}"
 
-for id in $(gh run list --workflow crawl.yml --limit 20 --json databaseId --jq '.[].databaseId'); do
+for id in $(gh run list --workflow crawl.yml --limit 40 --json databaseId --jq '.[].databaseId'); do
   [ "$id" = "${GITHUB_RUN_ID:-}" ] && continue
   rm -rf restored
   if gh run download "$id" -n shops-data -D restored >/dev/null 2>&1 && [ -f restored/shops.db.enc ]; then
