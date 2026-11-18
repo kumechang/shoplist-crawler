@@ -93,6 +93,19 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_sample(args) -> int:
+    rows = db.sample_rows(db.connect(args.db), args.n)
+    if not rows:
+        print("取得済みの店舗がありません")
+        return 0
+    for i, row in enumerate(rows, 1):
+        print(f"--- {i}/{len(rows)} ---")
+        for k, v in row.items():
+            if v not in ("", None):
+                print(f"{k}: {v}")
+    return 0
+
+
 def cmd_status(args) -> int:
     print(db.counts(db.connect(args.db)))
     return 0
@@ -126,6 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("export", help="取得済みの店舗情報をCSVに出力する")
     e.add_argument("--out", default="shops.csv")
     e.set_defaults(func=cmd_export)
+
+    m = sub.add_parser("sample", help="取得済みの店舗をランダムに数件表示する")
+    m.add_argument("-n", type=int, default=5)
+    m.set_defaults(func=cmd_sample)
 
     s = sub.add_parser("status", help="進捗を表示する")
     s.set_defaults(func=cmd_status)

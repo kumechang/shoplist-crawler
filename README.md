@@ -69,6 +69,13 @@ export DB_PASSPHRASE='設定したパスフレーズ'
 scripts/crypt.sh dec shops.csv.enc shops.csv
 ```
 
+DBを復号すれば、ランダムに数件を表示して中身を確認できます。
+
+```bash
+scripts/crypt.sh dec shops.db.enc shops.db
+shoplist sample -n 5
+```
+
 注意:
 - Artifactの保存期間は最大90日です。週1回の実行で毎回更新されるので消えませんが、90日以上実行が止まるとデータが失われます。
 - publicリポジトリでは、60日間リポジトリへの活動がないとスケジュール実行が自動で無効になります。止まったらActionsタブから再有効化してください。

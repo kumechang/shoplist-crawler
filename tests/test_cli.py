@@ -59,3 +59,13 @@ def test_collect_stops_gracefully_on_rate_limit(tmp_path, monkeypatch):
     assert rc == 3
     assert calls == ["q1"]  # 429後は叩き続けない
     assert db.counts(db.connect(dbp))["total"] == 1  # それまでの分は保存
+
+
+def test_sample_prints_fetched_stores(tmp_path, monkeypatch, info_html, capsys):
+    dbp = str(tmp_path / "t.db")
+    conn = db.connect(dbp)
+    db.add_ids(conn, [("example-shop", "")])
+    db.save_result(conn, "example-shop", "ok", info.parse_seller(info_html), "")
+    assert cli.main(["--db", dbp, "sample", "-n", "3"]) == 0
+    out = capsys.readouterr().out
+    assert "store_name: サンプルストア" in out and "seller_id: example-shop" in out

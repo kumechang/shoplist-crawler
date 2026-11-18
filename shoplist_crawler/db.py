@@ -86,3 +86,16 @@ def export_csv(conn: sqlite3.Connection, path: str) -> int:
             w.writerow(row)
             n += 1
     return n
+
+
+def sample_rows(conn: sqlite3.Connection, n: int = 5) -> list[dict]:
+    """取得済みの店舗からランダムにn件を返す。"""
+    rows = conn.execute(
+        "SELECT seller_id, raw_json FROM sellers WHERE status='ok' ORDER BY RANDOM() LIMIT ?", (n,)
+    ).fetchall()
+    out = []
+    for sid, raw in rows:
+        row = {"seller_id": sid, "url": f"https://store.shopping.yahoo.co.jp/{sid}/"}
+        row.update(to_row(json.loads(raw)))
+        out.append(row)
+    return out
