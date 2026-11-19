@@ -19,8 +19,8 @@ KEYWORDS = ["特定商取引", "運営責任者", "代表者", "所在地", "会
 _META_CHARSET = re.compile(rb'charset=["\']?([\w-]+)', re.I)
 
 
-def parse_targets(text: str) -> list[tuple[str, str, bool]]:
-    """`ラベル | URL | dump(任意)` の行を読む。#で始まる行と空行は無視。"""
+def parse_targets(text: str) -> list[tuple[str, str, str]]:
+    """`ラベル | URL | モード(任意: dump / structure)` の行を読む。#で始まる行と空行は無視。"""
     out = []
     for ln in text.splitlines():
         ln = ln.strip()
@@ -28,7 +28,8 @@ def parse_targets(text: str) -> list[tuple[str, str, bool]]:
             continue
         parts = [p.strip() for p in ln.split("|")]
         if len(parts) >= 2 and parts[1].startswith("http"):
-            out.append((parts[0], parts[1], len(parts) > 2 and parts[2] == "dump"))
+            mode = parts[2] if len(parts) > 2 and parts[2] in ("dump", "structure") else ""
+            out.append((parts[0], parts[1], mode))
     return out
 
 
@@ -53,7 +54,22 @@ def page_text(html: str) -> str:
     return re.sub(r"\s*\n\s*", "\n", t).strip()
 
 
-def probe_one(session: requests.Session, label: str, url: str, dump: bool, timeout: float = 30.0) -> dict:
+def structure(html: str) -> str:
+    """ページの構造だけを返す(値は出さない): タグの数と、見出し・項目名(th / dt / h1〜h4)の文字列。
+    項目名は短い文字列だけを対象にし、本文や値(td / dd)は出力しない。"""
+    tags = {t: len(re.findall(rf"<{t}[\s>]", html, re.I)) for t in ("table", "tr", "th", "td", "dl", "dt", "dd", "ul", "li", "h1", "h2", "h3", "h4")}
+    labels, seen = [], set()
+    for m in re.finditer(r"<(th|dt|h[1-4])[^>]*>(.*?)</\1>", html, re.S | re.I):
+        txt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(2))).strip()
+        if 0 < len(txt) <= 24 and txt not in seen:
+            seen.add(txt)
+            labels.append(f"{m.group(1).lower()}:{txt}")
+    return "タグ数 " + " ".join(f"{k}={v}" for k, v in tags.items() if v) + "\n項目名 " + " / ".join(labels[:80])
+
+
+def probe_one(session: requests.Session, label: str, url: str, mode: str | bool, timeout: float = 30.0) -> dict:
+    dump = mode in ("dump", True)
+    shape = mode == "structure"
     res = {"label": label, "url": url}
     try:
         resp = session.get(url, timeout=timeout, allow_redirects=True)
@@ -71,27 +87,27 @@ def probe_one(session: requests.Session, label: str, url: str, dump: bool, timeo
         title=title,
         flags=[k for k in KEYWORDS if k in text],
         server=resp.headers.get("Server", ""),
-        excerpt=(text[:6000] if "robots.txt" in url else page_text(text)[:6000]) if dump else "",
+        excerpt=(text[:6000] if "robots.txt" in url else page_text(text)[:6000]) if dump else (structure(text) if shape else ""),
     )
     return res
 
 
-def run(targets: list[tuple[str, str, bool]], delay: float = 3.0, timeout: float = 30.0, sleep=time.sleep) -> list[dict]:
+def run(targets: list[tuple[str, str, str]], delay: float = 3.0, timeout: float = 30.0, sleep=time.sleep) -> list[dict]:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "ja"})
     results, last_host = [], None
-    for label, url, dump in targets:
+    for label, url, mode in targets:
         host = urlparse(url).netloc
         if last_host is not None:
             sleep(delay)  # サイトに関係なく、毎回間隔を空ける(同じサイトへの連続アクセスを避ける)
         last_host = host
-        r = probe_one(session, label, url, dump, timeout)
+        r = probe_one(session, label, url, mode, timeout)
         results.append(r)
         flags = ",".join(r["flags"]) or "-"
         print(f"[{r['status']}] {label} | {url}", flush=True)
         print(f"      転送先={r['final'] or '-'} / {r['size']}B / server={r['server'] or '-'} / title={r['title'] or '-'} / キーワード={flags}", flush=True)
         if r["excerpt"]:
-            print("      ----- 本文(公開ドキュメント/robots.txt) -----")
+            print("      ----- 本文(公開ドキュメント/robots.txt)または構造 -----")
             print("\n".join("      " + ln for ln in r["excerpt"].splitlines()[:120]), flush=True)
     return results
 

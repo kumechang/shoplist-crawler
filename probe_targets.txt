@@ -1,5 +1,6 @@
 # 確認したいURL。1行 = `ラベル | URL | dump(任意)`。#で始まる行は無視。
 # dump を付けると、本文(公開ドキュメントや robots.txt のみ!)を出力する。会社情報のページには付けないこと。
+# structure を付けると、ページの構造(タグの数と、項目名 th/dt/見出し)だけを出力する。値は出力しない。会社情報のページはこちら。
 # 各URLに1回だけアクセスし、ステータス・転送先・サイズ・タイトル・キーワードの有無だけを出力する。
 
 # --- 楽天ウェブサービス(私の環境から503だった。APIの仕様を知りたい) ---
@@ -18,7 +19,7 @@ Qoo10 トップ | https://www.qoo10.jp/
 
 # --- au PAY マーケット(運営者情報ページが未確認) ---
 au PAY 店舗トップ | https://wowma.jp/user/34136806
-au PAY 運営者情報 | https://wowma.jp/bep/m/kmem?user=34136806
+au PAY 運営者情報 | https://wowma.jp/bep/m/kmem?user=34136806 | structure
 
 # --- dショッピング(403だった) ---
 dショッピング robots | https://dshopping.docomo.ne.jp/robots.txt | dump
