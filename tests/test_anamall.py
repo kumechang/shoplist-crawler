@@ -121,3 +121,81 @@ def test_anamall_default_delay_follows_crawl_delay(tmp_path, monkeypatch):
     cli.main(["--db", dbp, "fetch", "--site", "anamall", "--delay", "3"])
     assert [d for d, _ in seen] == [10.0, 2.0, 10.0, 3.0]
     assert seen[0][1] is anamall.fetch_guide and seen[1][1] is None
+
+
+# ---------- 店舗ごとの書式の違い(実際に見つかった4通りを、架空の内容で再現) ----------
+def _page(*lines: str) -> str:
+    nav = "<ul><li>会社概要</li><li>配送について</li><li>お問い合わせ先</li></ul>"
+    return "<html><body>" + nav + "<br>".join(lines) + "</body></html>"
+
+
+SHIPPING = ["配送について", "ヤマト運輸でお届けします。", "TEL：0120-111-111 は運送会社の番号です", "お支払について"]
+
+
+def test_variant_bullet_prefixed_labels():  # 「●販売事業者名：…」
+    html = _page(
+        "会社概要", "●販売事業者名：架空株式会社", "●ショップ名：架空ショップ ANA Mall店",
+        "●所在地：〒150-0001 東京都渋谷区1-2-3", "●代表者：佐藤 一郎", "●TEL：03-1111-2222",
+        *SHIPPING, "お問い合わせ先", "窓口：架空株式会社", "TEL：03-3333-4444", "営業時間：10:00-17:00", "E-mail：help@example.org",
+    )
+    s = anamall.parse_guide(html)
+    assert s["businessKind"] == "架空株式会社" and s["companyPost"] == "150-0001" and s["companyPerson"] == "佐藤 一郎"
+    assert s["contactTel"] == "03-3333-4444" and s["contactMail"] == "help@example.org"  # 配送の説明の電話番号は拾わない
+
+
+def test_variant_bracket_headings_with_value_on_next_line():  # 「【販売事業者名】」の次の行に値
+    html = _page(
+        "会社概要", "【販売事業者名】", "架空商事株式会社", "【ショップ名】", "架空商事 ANA Mall店",
+        "【所在地】", "〒530-0001 大阪府大阪市北区1-1", "【代表者】", "田中 次郎", "TEL：06-1111-2222 FAX：06-1111-3333",
+        *SHIPPING, "お問い合わせ先", "TEL：06-5555-6666",
+    )
+    s = anamall.parse_guide(html)
+    assert (s["businessKind"], s["name"], s["companyPost"], s["companyPerson"]) == ("架空商事株式会社", "架空商事 ANA Mall店", "530-0001", "田中 次郎")
+    assert s["contactTel"] == "06-5555-6666" and "contactMail" not in s
+
+
+def test_variant_other_label_names_and_company_phone_fallback():  # 「販売業者」「事業責任者」。お問い合わせ先に電話がなければ会社の電話
+    html = _page(
+        "会社概要", "販売業者：架空酒販株式会社", "ショップ名：架空酒販 ANA Mall店", "事業責任者：鈴木 三郎",
+        "所在地：神奈川県横浜市1-1", "TEL：045-111-2222", *SHIPPING, "お問い合わせ先", "窓口の名称:カスタマーサポート", "お問い合わせフォーム:https://example.org/contact",
+    )
+    s = anamall.parse_guide(html)
+    assert s["businessKind"] == "架空酒販株式会社" and s["contactPerson"] == "鈴木 三郎"
+    assert s["companyAddress"] == "神奈川県横浜市1-1" and "companyPost" not in s
+    assert s["contactTel"] == "045-111-2222" and "companyTel" not in s
+
+
+def test_free_text_format_is_reported_not_crashed(monkeypatch):  # 項目ではなく文章で書かれた書式
+    html = _page("会社概要", "1.事業者の名称・住所・代表者氏名", "当社は架空株式会社(東京都港区)、代表は山田です。", "お問い合わせ先", "TEL：03-0000-0000")
+    assert anamall.parse_guide(html) is None
+    monkeypatch.setattr(anamall, "get_with_retry", lambda *a, **k: FakeResponse(200, html))
+    r = anamall.fetch_guide(None, "0010")
+    assert r.status == "error" and r.layout is True
+
+
+def test_label_in_middle_of_line_does_not_crash(monkeypatch):
+    """以前は、行の途中にだけ「販売事業者名」がある書式で StopIteration になり、実行全体が落ちた。"""
+    html = _page("会社概要", "※販売事業者名は下記のとおりです。", "お問い合わせ先", "TEL：03-0000-0000")
+    assert anamall.parse_guide(html) is None
+    monkeypatch.setattr(anamall, "parse_guide", lambda h: (_ for _ in ()).throw(ValueError("想定外")))
+    monkeypatch.setattr(anamall, "get_with_retry", lambda *a, **k: FakeResponse(200, "<html></html>"))
+    r = anamall.fetch_guide(None, "0001")
+    assert r.status == "error" and r.layout and "ValueError" in r.error  # 例外も、その店舗だけのエラーにする
+
+
+def test_layout_errors_do_not_abort_the_run_but_network_errors_do(tmp_path, monkeypatch):
+    dbp = str(tmp_path / "t.db")
+    conn = db.connect(dbp)
+    db.add_ids(conn, [(f"{i:04d}", "") for i in range(40)])
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    from shoplist_crawler.info import FetchResult
+    calls = []
+    monkeypatch.setattr(cli.anamall, "fetch_guide", lambda s, sid: (calls.append(sid), FetchResult("error", error="書式", layout=True))[1])
+    assert cli.main(["--db", dbp, "fetch", "--site", "anamall", "--delay", "0"]) == 0
+    assert len(calls) == 40  # 書式エラーが40件続いても、止まらない
+    calls.clear()
+    conn.execute("UPDATE sellers SET status=NULL, error=NULL")
+    conn.commit()
+    monkeypatch.setattr(cli.anamall, "fetch_guide", lambda s, sid: (calls.append(sid), FetchResult("error", error="HTTP 503"))[1])
+    assert cli.main(["--db", dbp, "fetch", "--site", "anamall", "--delay", "0"]) == 1
+    assert len(calls) == cli.MAX_CONSECUTIVE_ERRORS  # 通信エラーが続くときは、従来どおり止まる

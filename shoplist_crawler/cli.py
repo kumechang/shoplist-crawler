@@ -161,7 +161,10 @@ def _run_fetch_loop(conn, targets: list[str], save, delay: float, fetch=None) ->
             label = save(conn, sid, r)
             detail = f" {r.error}" if r.error else ""
             print(f"[{i}/{len(targets)}] {sid}: {label}{detail}", flush=True)
-            errors = errors + 1 if r.status == "error" else 0
+            if r.status == "error" and not r.layout:
+                errors += 1  # 通信・アクセス制限などのエラー
+            elif not r.layout:
+                errors = 0  # (店舗ごとの書式の違いで読めなかった場合は、連続エラーに数えない)
             if errors >= MAX_CONSECUTIVE_ERRORS:
                 print(f"エラーが{errors}回続いたため中断します(アクセス制限やページ構造の変更の可能性)", file=sys.stderr)
                 return 1

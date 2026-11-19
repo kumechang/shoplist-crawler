@@ -76,6 +76,7 @@ class FetchResult:
     status: str  # ok / not_found / error
     seller: dict | None = None
     error: str = ""
+    layout: bool = False  # 通信ではなく、そのページの書式が読めなかったエラー(店舗ごとの書式の違いなど)
 
 
 def parse_seller(html: str) -> dict | None:
