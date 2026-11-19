@@ -4,6 +4,11 @@ name: probe
 # 対象は probe_targets.txt。各URLに1回だけアクセスし、ステータス・タイトル・キーワードの有無だけを出力する。
 on:
   workflow_dispatch:
+    inputs:
+      targets_file:
+        description: "確認するURLの一覧ファイル"
+        type: string
+        default: "probe_targets.txt"
 
 permissions:
   contents: read
@@ -20,4 +25,6 @@ jobs:
           cache: pip
       - run: pip install .
       - name: Probe
-        run: shoplist probe probe_targets.txt
+        run: shoplist probe "$TARGETS_FILE"
+        env:
+          TARGETS_FILE: ${{ inputs.targets_file || 'probe_targets.txt' }}

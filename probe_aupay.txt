@@ -1,0 +1,6 @@
+# au PAY マーケット: 店舗情報ページ(kmem)の構造を、数店舗で比べる。値は出力しない(structure)。
+au PAY 運営者情報 A | https://wowma.jp/bep/m/kmem?user=34136806 | structure
+au PAY 運営者情報 B | https://wowma.jp/bep/m/kmem?user=43013064 | structure
+au PAY 運営者情報 C | https://wowma.jp/bep/m/kmem?user=13953335 | structure
+au PAY 運営者情報 D | https://wowma.jp/bep/m/kmem?user=29741739 | structure
+au PAY 運営者情報 E | https://wowma.jp/bep/m/kmem?user=36926059 | structure

@@ -64,7 +64,16 @@ def structure(html: str) -> str:
         if 0 < len(txt) <= 24 and txt not in seen:
             seen.add(txt)
             labels.append(f"{m.group(1).lower()}:{txt}")
-    return "タグ数 " + " ".join(f"{k}={v}" for k, v in tags.items() if v) + "\n項目名 " + " / ".join(labels[:80])
+    # 骨格: 最初のいくつかの <h3> について、次の <h3> までに続くタグの名前だけ(文字や値は出さない)
+    skeleton = []
+    parts = re.split(r"(?=<h3[\s>])", html)
+    for part in parts[1:5]:
+        label = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", part.split("</h3>")[0])).strip()[:14]
+        after = part.split("</h3>", 1)[1] if "</h3>" in part else ""
+        seq = re.findall(r"<([a-zA-Z][a-zA-Z0-9]*)", after)[:10]
+        skeleton.append(f"{label}→{'>'.join(seq) or '(タグなし: 直後が文字)'}")
+    return ("タグ数 " + " ".join(f"{k}={v}" for k, v in tags.items() if v) + "\n項目名 " + " / ".join(labels[:80])
+            + ("\n骨格 " + " | ".join(skeleton) if skeleton else ""))
 
 
 def probe_one(session: requests.Session, label: str, url: str, mode: str | bool, timeout: float = 30.0) -> dict:

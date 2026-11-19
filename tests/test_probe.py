@@ -80,3 +80,11 @@ def test_structure_mode_prints_labels_but_never_values():
     assert "th:販売事業者名" in out and "th:代表者" in out and "dt:電話番号" in out and "h2:運営者情報" in out
     assert "table=1" in out and "th=2" in out
     assert "秘密株式会社" not in out and "山田" not in out and "03-1234-5678" not in out  # 値は出さない
+
+
+def test_structure_mode_shows_tag_skeleton_after_headings_without_values():
+    html = "<h3>販売事業者名</h3><p>秘密株式会社</p><h3>電話番号</h3><ul><li>03-1234-5678</li></ul><h3>備考</h3>直接の文字".encode()
+    s = FakeSession({"https://x.example/": FakeResp(200, html)})
+    out = probe.probe_one(s, "X", "https://x.example/", "structure")["excerpt"]
+    assert "販売事業者名→p" in out and "電話番号→ul>li" in out and "備考→(タグなし" in out
+    assert "秘密株式会社" not in out and "03-1234-5678" not in out
