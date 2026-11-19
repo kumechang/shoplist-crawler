@@ -1,0 +1,23 @@
+name: probe
+
+# 取得できなかったサイトに、GitHub Actions のサーバーからアクセスして、どう返るかを確認する(手動実行のみ)。
+# 対象は probe_targets.txt。各URLに1回だけアクセスし、ステータス・タイトル・キーワードの有無だけを出力する。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install .
+      - name: Probe
+        run: shoplist probe probe_targets.txt

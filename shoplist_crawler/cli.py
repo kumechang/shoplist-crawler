@@ -6,7 +6,7 @@ import random
 import sys
 import time
 
-from . import anamall, api, categories, db, info, partition
+from . import anamall, api, categories, db, info, partition, probe
 from .http import new_session
 
 
@@ -270,6 +270,20 @@ def cmd_pending_count(args) -> int:
     return 0
 
 
+def cmd_probe(args) -> int:
+    """取得できなかったサイトに、この環境からアクセスして、どう返るかを確認する(診断用)。"""
+    if not os.path.exists(args.file):
+        print(f"エラー: {args.file} がありません", file=sys.stderr)
+        return 2
+    targets = probe.parse_targets(open(args.file, encoding="utf-8").read())
+    if not targets:
+        print("エラー: 確認するURLがありません", file=sys.stderr)
+        return 2
+    results = probe.run(targets, delay=args.delay, timeout=args.timeout)
+    probe.write_summary(results)
+    return 0
+
+
 def cmd_status(args) -> int:
     conn = db.connect(args.db)
     print(db.counts(conn))
@@ -345,6 +359,12 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("sample", help="取得済みの店舗をランダムに数件表示する")
     m.add_argument("-n", type=int, default=5)
     m.set_defaults(func=cmd_sample)
+
+    pr = sub.add_parser("probe", help="取得できなかったサイトに、この環境からアクセスして、どう返るかを確認する")
+    pr.add_argument("file", nargs="?", default="probe_targets.txt")
+    pr.add_argument("--delay", type=float, default=3.0, help="URLごとの間隔(秒)")
+    pr.add_argument("--timeout", type=float, default=30.0)
+    pr.set_defaults(func=cmd_probe)
 
     pc = sub.add_parser("pending-count", help="未取得の店舗数だけを表示する")
     pc.set_defaults(func=cmd_pending_count)

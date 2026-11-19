@@ -1,0 +1,33 @@
+# 確認したいURL。1行 = `ラベル | URL | dump(任意)`。#で始まる行は無視。
+# dump を付けると、本文(公開ドキュメントや robots.txt のみ!)を出力する。会社情報のページには付けないこと。
+# 各URLに1回だけアクセスし、ステータス・転送先・サイズ・タイトル・キーワードの有無だけを出力する。
+
+# --- 楽天ウェブサービス(私の環境から503だった。APIの仕様を知りたい) ---
+楽天ウェブサービス 商品検索API | https://webservice.rakuten.co.jp/documentation/ichiba-item-search | dump
+楽天ウェブサービス トップ | https://webservice.rakuten.co.jp/
+
+# --- JRE MALL(アプリのページが503だった) ---
+JRE MALL robots | https://www.jreastmall.com/robots.txt | dump
+JRE MALL トップ | https://www.jreastmall.com/
+JRE MALL ショップ一覧(候補) | https://www.jreastmall.com/shop/pages/shoplist.aspx
+JRE MALL ビックカメラ店 | https://www.jreastmall.com/biccamera
+
+# --- Qoo10(523エラーだった) ---
+Qoo10 robots | https://www.qoo10.jp/robots.txt | dump
+Qoo10 トップ | https://www.qoo10.jp/
+
+# --- au PAY マーケット(運営者情報ページが未確認) ---
+au PAY 店舗トップ | https://wowma.jp/user/34136806
+au PAY 運営者情報 | https://wowma.jp/bep/m/kmem?user=34136806
+
+# --- dショッピング(403だった) ---
+dショッピング robots | https://dshopping.docomo.ne.jp/robots.txt | dump
+dショッピング トップ | https://dshopping.docomo.ne.jp/
+
+# --- SHOPLIST(403だった) ---
+SHOPLIST robots | https://shoplist.com/robots.txt | dump
+SHOPLIST トップ | https://shoplist.com/
+
+# --- ZOZOTOWN(接続できなかった) ---
+ZOZOTOWN robots | https://zozo.jp/robots.txt | dump
+ZOZOTOWN トップ | https://zozo.jp/
