@@ -6,7 +6,7 @@ import random
 import sys
 import time
 
-from . import api, categories, db, info, partition
+from . import anamall, api, categories, db, info, partition
 from .http import new_session
 
 
@@ -147,7 +147,7 @@ def cmd_add_ids(args) -> int:
 MAX_CONSECUTIVE_ERRORS = 20
 
 
-def _run_fetch_loop(conn, targets: list[str], save, delay: float) -> int:
+def _run_fetch_loop(conn, targets: list[str], save, delay: float, fetch=None) -> int:
     """店舗ごとに会社概要ページを取得して save(...) で保存する。fetch / refresh の共通処理。
 
     Ctrl-C(や timeout -s INT)で止めても取得済み分は保存済み。エラーが続く場合(ブロックやページ構造の変更)は、
@@ -157,7 +157,7 @@ def _run_fetch_loop(conn, targets: list[str], save, delay: float) -> int:
     errors = 0
     try:
         for i, sid in enumerate(targets, 1):
-            r = info.fetch_info(session, sid)
+            r = (fetch or info.fetch_info)(session, sid)
             label = save(conn, sid, r)
             detail = f" {r.error}" if r.error else ""
             print(f"[{i}/{len(targets)}] {sid}: {label}{detail}", flush=True)
@@ -180,12 +180,35 @@ def _save_refresh(conn, sid, r) -> str:
     return db.save_refresh(conn, sid, r.status, r.seller, r.error)
 
 
+def _site(args):
+    """--site に応じた (取得関数, 既定のアクセス間隔, CSVの行を作る関数) を返す。"""
+    if getattr(args, "site", "yahoo") == "anamall":
+        return anamall.fetch_guide, anamall.DEFAULT_DELAY, anamall.to_sample_row
+    return None, 2.0, None
+
+
+def cmd_anamall_discover(args) -> int:
+    """ANA Mall のショップ一覧(1ページ)から店舗コードを集める。"""
+    conn = db.connect(args.db)
+    try:
+        shops = anamall.fetch_shop_list(new_session())
+    except RuntimeError as e:
+        print(f"エラー: {e}", file=sys.stderr)
+        return 1
+    new = db.add_ids(conn, [(code, name) for code, name, _ in shops])
+    db.add_seller_categories(conn, [(code, cat) for code, _, cat in shops if cat])
+    print(f"ショップ一覧 {len(shops)} 店舗 / 新規 {new} 店舗")
+    print(db.counts(conn))
+    return 0
+
+
 def cmd_fetch(args) -> int:
     """② 新店舗の情報取得: まだ取得していない店舗の会社概要ページを取得する。"""
     conn = db.connect(args.db)
+    fetch, default_delay, _ = _site(args)
     targets = db.pending_ids(conn, retry_errors=args.retry_errors, limit=args.limit)
     print(f"取得対象 {len(targets)} 件")
-    rc = _run_fetch_loop(conn, targets, _save_new, args.delay)
+    rc = _run_fetch_loop(conn, targets, _save_new, args.delay if args.delay is not None else default_delay, fetch)
     print(db.counts(conn))
     return rc
 
@@ -193,9 +216,10 @@ def cmd_fetch(args) -> int:
 def cmd_refresh(args) -> int:
     """③ 既存店舗の情報更新: 取得から日数が経った店舗を取り直し、変更・閉店を記録する。"""
     conn = db.connect(args.db)
+    fetch, default_delay, _ = _site(args)
     targets = db.refresh_ids(conn, args.older_than_days, limit=args.limit)
     print(f"更新チェック対象 {len(targets)} 件 ({args.older_than_days:g}日より古い営業中の店舗 / 閉店・不明は4倍の間隔)")
-    rc = _run_fetch_loop(conn, targets, _save_refresh, args.delay)
+    rc = _run_fetch_loop(conn, targets, _save_refresh, args.delay if args.delay is not None else default_delay, fetch)
     print(db.counts(conn))
     print("直近30日:", db.recent_activity(conn, 30))
     return rc
@@ -219,7 +243,7 @@ def cmd_changes(args) -> int:
 
 def cmd_export(args) -> int:
     conn = db.connect(args.db)
-    n = db.export_csv(conn, args.out, args.format, args.include_closed)
+    n = db.export_csv(conn, args.out, args.format, args.include_closed, _site(args)[2])
     print(f"{n} 件を {args.out} に出力しました")
     return 0
 
@@ -279,20 +303,25 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("--list-only", action="store_true", help="対象カテゴリーを表示するだけ(商品検索はしない)")
     cc.set_defaults(func=cmd_collect_categories)
 
+    ad = sub.add_parser("anamall-discover", help="ANA Mall のショップ一覧から店舗コードを集める(1リクエスト)")
+    ad.set_defaults(func=cmd_anamall_discover)
+
     a = sub.add_parser("add-ids", help="店舗IDを手動で追加する")
     a.add_argument("ids", nargs="*")
     a.add_argument("--file", help="店舗IDを1行1つで書いたファイル")
     a.set_defaults(func=cmd_add_ids)
 
     f = sub.add_parser("fetch", help="未取得の店舗の会社概要ページを取得する")
-    f.add_argument("--delay", type=float, default=2.0, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ")
+    f.add_argument("--site", choices=("yahoo", "anamall"), default="yahoo", help="取得先のモール (default: yahoo)")
+    f.add_argument("--delay", type=float, default=None, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ (既定: yahoo=2秒 / anamall=10秒)")
     f.add_argument("--limit", type=int, help="今回取得する最大件数")
     f.add_argument("--retry-errors", action="store_true", help="前回エラーだった店舗も再取得")
     f.set_defaults(func=cmd_fetch)
 
     r = sub.add_parser("refresh", help="取得から日数が経った店舗を取り直して、変更・閉店を記録する")
     r.add_argument("--older-than-days", type=float, default=30, help="取得からこの日数が経った店舗が対象 (default: 30)")
-    r.add_argument("--delay", type=float, default=2.0, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ")
+    r.add_argument("--site", choices=("yahoo", "anamall"), default="yahoo", help="取得先のモール (default: yahoo)")
+    r.add_argument("--delay", type=float, default=None, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ (既定: yahoo=2秒 / anamall=10秒)")
     r.add_argument("--limit", type=int, help="今回チェックする最大件数")
     r.set_defaults(func=cmd_refresh)
 
@@ -306,6 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", default="shops.csv")
     e.add_argument("--format", choices=("sample", "full"), default="sample",
                    help="sample=指定の列(店舗×カテゴリーごとに1行) / full=全項目(1店舗1行)")
+    e.add_argument("--site", choices=("yahoo", "anamall"), default="yahoo", help="CSVを作るモール (default: yahoo)")
     e.add_argument("--include-closed", action="store_true", help="閉店・削除を検出した店舗(最後に取れた内容)も出力に含める")
     e.set_defaults(func=cmd_export)
 

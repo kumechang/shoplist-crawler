@@ -237,7 +237,7 @@ def iter_rows(conn: sqlite3.Connection, include_closed: bool = False) -> Iterato
         yield row
 
 
-def iter_sample_rows(conn: sqlite3.Connection, include_closed: bool = False) -> Iterator[dict]:
+def iter_sample_rows(conn: sqlite3.Connection, include_closed: bool = False, row_builder=None) -> Iterator[dict]:
     """サンプルCSVと同じ列。店舗×カテゴリーごとに1行(カテゴリー不明の店舗は空欄で1行)。"""
     cats: dict[str, list[str]] = {}
     for sid, cat in conn.execute("SELECT seller_id, category FROM seller_categories ORDER BY seller_id, category"):
@@ -245,14 +245,14 @@ def iter_sample_rows(conn: sqlite3.Connection, include_closed: bool = False) -> 
     for sid, raw in conn.execute(
         f"SELECT seller_id, raw_json FROM sellers WHERE status IN {_statuses(include_closed)} ORDER BY seller_id"
     ):
-        base = to_sample_row(sid, json.loads(raw))
+        base = (row_builder or to_sample_row)(sid, json.loads(raw))
         for cat in cats.get(sid) or [""]:
             yield {**base, "カテゴリー": cat}
 
 
-def export_csv(conn: sqlite3.Connection, path: str, fmt: str = "sample", include_closed: bool = False) -> int:
+def export_csv(conn: sqlite3.Connection, path: str, fmt: str = "sample", include_closed: bool = False, row_builder=None) -> int:
     if fmt == "sample":
-        fields, rows = SAMPLE_HEADERS, iter_sample_rows(conn, include_closed)
+        fields, rows = SAMPLE_HEADERS, iter_sample_rows(conn, include_closed, row_builder)
     else:
         fields = ["seller_id", "url"] + FULL_EXTRA + [c for c, _ in EXPORT_FIELDS]
         rows = iter_rows(conn, include_closed)

@@ -142,6 +142,23 @@ shoplist sample -n 5
 - publicリポジトリでは、60日間リポジトリへの活動がないとスケジュール実行が自動で無効になります。止まったらActionsタブから再有効化してください。
 - GitHubのサーバーのIPからだと、Yahoo側にアクセスを弾かれる可能性があります。まず手動実行で、`limit` を小さく(例: 20)して試してください。
 
+## ANA Mall(約250店舗)
+
+Yahoo とは別のDB・別のワークフロー(`.github/workflows/anamall.yml`)で動かします。同時に動いても衝突しません。
+
+```bash
+shoplist --db anamall.db anamall-discover                 # ショップ一覧(1ページ)から店舗コードを集める
+shoplist --db anamall.db fetch --site anamall --limit 5  # 店舗ガイドから会社情報を取得(10秒おき)
+shoplist --db anamall.db refresh --site anamall --older-than-days 6   # 取り直して変更・閉店を記録
+shoplist --db anamall.db export --site anamall --out anamall.csv       # Yahoo と同じ11列
+```
+
+- 取得元: ショップ一覧 `https://anamall.ana.co.jp/feature/shops.aspx` と、店舗ごとの `.../shop/shop/guide.aspx?shop=<4桁コード>`。
+- 取れる項目: 販売事業者名、ショップ名、所在地(〒付き)、代表者、店舗運営責任者、電話・FAX・メール(「お問い合わせ先」欄に店舗が書いている場合)。
+- フリガナはありません(空欄)。カテゴリーは、一覧ページに印がある「ANAグループ」の店舗だけ入ります(ほかは空欄)。
+- **アクセス間隔は10秒**です。ANA Mall の `robots.txt` が、AI のクローラー向けに `Crawl-delay: 10` を求めているためです(私のクローラーの名乗りはその一覧にはありませんが、サイトの意図に合わせています)。
+- ワークフローは、毎週土曜 18:37 UTC(日曜 3:37 JST)と手動実行で動きます。約250店舗で約45分です。結果は暗号化して、Artifact `anamall-data` に保存します(Yahoo と同じ `DB_PASSPHRASE`)。
+
 ## マナー・注意
 
 - `fetch` はデフォルトで約2〜3秒間隔でアクセスします。`--delay` を短くしすぎないでください。429/5xxは自動で間隔を空けて再試行します。

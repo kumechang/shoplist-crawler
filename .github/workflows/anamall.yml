@@ -1,0 +1,93 @@
+name: anamall
+
+# ANA Mall(約250店舗)の店舗情報。Yahoo の crawl とは別のDB・別のArtifactで、同時に動いても衝突しない。
+# robots.txt が Crawl-delay: 10 を求めているので、10秒おきにアクセスする(約250店舗で約45分)。
+on:
+  schedule:
+    - cron: "37 18 * * 6" # 毎週土曜 18:37 UTC(日曜 3:37 JST)
+  workflow_dispatch:
+    inputs:
+      refresh_days:
+        description: "取得からこの日数が経った店舗を取り直す"
+        type: string
+        default: "6"
+
+permissions:
+  contents: read
+  actions: read # 前回のArtifactをダウンロードするため
+
+concurrency:
+  group: anamall
+  cancel-in-progress: false
+
+jobs:
+  anamall:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DB_PASSPHRASE: ${{ secrets.DB_PASSPHRASE }}
+      REFRESH_DAYS: ${{ inputs.refresh_days || '6' }}
+      # restore_db.sh に渡す(Yahoo とは別のArtifact・ファイル名)
+      WORKFLOW_FILE: anamall.yml
+      ARTIFACT_NAME: anamall-data
+      ENC_FILE: anamall.db.enc
+      DB_FILE: anamall.db
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install .
+
+      - name: Check secrets
+        run: |
+          if [ -z "$DB_PASSPHRASE" ]; then
+            echo "::error::Secret DB_PASSPHRASE が未設定です(個人情報を含むDBを暗号化するために必須)"
+            exit 1
+          fi
+
+      - name: Restore DB from previous run
+        run: scripts/restore_db.sh
+
+      - name: Discover shops (shop list page, 1 request)
+        run: shoplist --db anamall.db anamall-discover
+
+      # 未取得の店舗を取得(10秒おき)。INTで打ち切っても、取得済み分は保存済みで、次回は続きから
+      - name: Fetch info of new shops
+        timeout-minutes: 110
+        run: |
+          timeout -s INT 6000 shoplist --db anamall.db fetch --site anamall || [ $? -eq 124 ]
+
+      # 取得から REFRESH_DAYS 日が経った店舗を取り直して、変更・閉店(店舗ガイドが404)を記録する
+      - name: Refresh existing shops
+        if: ${{ !cancelled() }}
+        timeout-minutes: 110
+        run: |
+          timeout -s INT 6000 shoplist --db anamall.db refresh --site anamall --older-than-days "$REFRESH_DAYS" || [ $? -eq 124 ]
+
+      - name: Export, encrypt
+        if: always() && hashFiles('anamall.db') != ''
+        run: |
+          mkdir -p out
+          shoplist --db anamall.db export --site anamall --out anamall.csv
+          shoplist --db anamall.db export --site anamall --format full --include-closed --out anamall_full.csv
+          shoplist --db anamall.db changes --since-days 3650 --out anamall_changes.csv
+          scripts/crypt.sh enc anamall.db out/anamall.db.enc
+          scripts/crypt.sh enc anamall.csv out/anamall.csv.enc
+          scripts/crypt.sh enc anamall_full.csv out/anamall_full.csv.enc
+          scripts/crypt.sh enc anamall_changes.csv out/anamall_changes.csv.enc
+          echo '### ANA Mall の進捗' >> "$GITHUB_STEP_SUMMARY"
+          shoplist --db anamall.db status >> "$GITHUB_STEP_SUMMARY"
+
+      # publicリポジトリのArtifactは誰でもダウンロードできるため、必ず暗号化したものだけを上げる
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('out/anamall.db.enc') != ''
+        with:
+          name: anamall-data
+          path: out/
+          retention-days: 90
