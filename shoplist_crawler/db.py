@@ -34,6 +34,19 @@ CREATE TABLE IF NOT EXISTS seller_changes (
 );
 CREATE INDEX IF NOT EXISTS idx_changes_at ON seller_changes(changed_at);
 
+-- 店舗名検索で店舗を探すサイト(au PAY マーケット)の検索語と進捗。
+-- 検索語は1文字から始め、見つかった店舗名に出てくる文字を足していく。freq はその文字を含む店舗名の数
+CREATE TABLE IF NOT EXISTS search_queries (
+    site       TEXT NOT NULL,
+    query      TEXT NOT NULL,
+    seed       INTEGER NOT NULL DEFAULT 0,
+    freq       INTEGER NOT NULL DEFAULT 0,
+    total      INTEGER,
+    pages_done INTEGER NOT NULL DEFAULT 0,
+    done_at    TEXT,
+    PRIMARY KEY (site, query)
+);
+
 -- 店舗がどのカテゴリー(例: メンズファッション/その他メンズファッション)の商品検索で見つかったか
 CREATE TABLE IF NOT EXISTS seller_categories (
     seller_id TEXT NOT NULL,
@@ -107,6 +120,56 @@ def set_unit(conn: sqlite3.Connection, unit: str, state: str, total: int | None)
         (unit, state, total, _now()),
     )
     conn.commit()
+
+
+def add_queries(conn: sqlite3.Connection, site: str, queries: Iterable[str], seed: bool = False) -> None:
+    conn.executemany(
+        "INSERT OR IGNORE INTO search_queries(site, query, seed) VALUES (?,?,?)", [(site, q, int(seed)) for q in queries]
+    )
+    conn.commit()
+
+
+def bump_queries(conn: sqlite3.Connection, site: str, counts: dict[str, int]) -> None:
+    """検索語の出現数(freq)を足す。まだ無い検索語は、新しく追加する。"""
+    conn.executemany("INSERT OR IGNORE INTO search_queries(site, query) VALUES (?,?)", [(site, q) for q in counts])
+    conn.executemany(
+        "UPDATE search_queries SET freq = freq + ? WHERE site=? AND query=?", [(n, site, q) for q, n in counts.items()]
+    )
+    conn.commit()
+
+
+def next_query(conn: sqlite3.Connection, site: str, recrawl_days: float | None = None) -> tuple[str, int | None, int] | None:
+    """次に検索する (検索語, 総件数, 済んだページ数)。途中のものを先に。終わってから recrawl_days が経ったものはやり直す。"""
+    cutoff = _cutoff(recrawl_days) if recrawl_days else None
+    row = conn.execute(
+        "SELECT query, total, pages_done, done_at FROM search_queries WHERE site=? "
+        "AND (done_at IS NULL OR (? IS NOT NULL AND done_at < ?)) "
+        "ORDER BY (pages_done > 0 AND done_at IS NULL) DESC, seed DESC, freq DESC, query LIMIT 1",
+        (site, cutoff, cutoff),
+    ).fetchone()
+    if not row:
+        return None
+    query, total, pages_done, done_at = row
+    if done_at is not None:  # やり直し
+        conn.execute("UPDATE search_queries SET pages_done=0, total=NULL, done_at=NULL WHERE site=? AND query=?", (site, query))
+        conn.commit()
+        return query, None, 0
+    return query, total, pages_done
+
+
+def save_query(conn: sqlite3.Connection, site: str, query: str, total: int, pages_done: int, done: bool) -> None:
+    conn.execute(
+        "UPDATE search_queries SET total=?, pages_done=?, done_at=? WHERE site=? AND query=?",
+        (total, pages_done, _now() if done else None, site, query),
+    )
+    conn.commit()
+
+
+def query_progress(conn: sqlite3.Connection, site: str) -> tuple[int, int]:
+    """(検索語の数, 完了した数)"""
+    return conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(done_at IS NOT NULL), 0) FROM search_queries WHERE site=?", (site,)
+    ).fetchone()
 
 
 def pending_ids(conn: sqlite3.Connection, *, retry_errors: bool = False, limit: int | None = None) -> list[str]:

@@ -1,0 +1,160 @@
+name: aupay
+
+# au PAY マーケットの店舗情報。Yahoo・ANA Mall とは別のDB・別のArtifactで、同時に動いても衝突しない。
+#  ① 発見: 店舗名検索を1文字ずつ(ひらがな・カタカナ・英数字)かけ、見つかった店舗名の文字を検索語に足していく
+#  ② 取得: 店舗ごとの情報ページ(/bep/m/kmem?user=<店舗ID>)を3秒おきに取得
+#  ③ 更新: 取得から日数が経った店舗を取り直し、変更・閉店を記録
+# 店舗数が多いので、やることが残っていれば、終わったあとに次の実行を自分で起動する(止め方は下)。
+on:
+  schedule:
+    - cron: "47 19 * * 0" # 毎週日曜 19:47 UTC(月曜 4:47 JST)。連続実行の予備と、完了後の定期メンテナンス
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "やることが残っていれば、終わったあとに次の実行を自動で起動し続ける(最初の起動は true)"
+        type: boolean
+        default: false
+      collect_minutes:
+        description: "店舗の発見に使う最大時間(分)。実際は実行の残り時間の範囲内。動作確認では5など短くする"
+        type: string
+        default: "300"
+      limit:
+        description: "新店舗の情報取得: 今回取得する最大店舗数"
+        type: string
+        default: "5000"
+      refresh_limit:
+        description: "既存店舗の更新チェック: 今回チェックする最大店舗数"
+        type: string
+        default: "3000"
+      refresh_days:
+        description: "取得からこの日数が経った店舗を更新チェックする"
+        type: string
+        default: "30"
+      recrawl_days:
+        description: "終わってからこの日数が経った検索語は、検索し直して新店舗を見つける"
+        type: string
+        default: "30"
+
+permissions:
+  contents: read
+  actions: write # 前回のArtifactのダウンロードと、次の実行の起動(連続実行)のため
+
+concurrency:
+  group: aupay
+  cancel-in-progress: false
+
+jobs:
+  aupay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355 # GitHubホステッドランナーのジョブ上限は360分
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DB_PASSPHRASE: ${{ secrets.DB_PASSPHRASE }}
+      COLLECT_MINUTES: ${{ inputs.collect_minutes || '300' }}
+      LIMIT: ${{ inputs.limit || '5000' }}
+      REFRESH_LIMIT: ${{ inputs.refresh_limit || '3000' }}
+      REFRESH_DAYS: ${{ inputs.refresh_days || '30' }}
+      RECRAWL_DAYS: ${{ inputs.recrawl_days || '30' }}
+      CHAIN: ${{ github.event_name == 'schedule' || inputs.chain }}
+      # restore_db.sh に渡す(他のサイトとは別のArtifact・ファイル名)
+      WORKFLOW_FILE: aupay.yml
+      ARTIFACT_NAME: aupay-data
+      ENC_FILE: aupay.db.enc
+      DB_FILE: aupay.db
+    steps:
+      - name: Record job start
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install .
+
+      - name: Check secrets
+        run: |
+          if [ -z "$DB_PASSPHRASE" ]; then
+            echo "::error::Secret DB_PASSPHRASE が未設定です(個人情報を含むDBを暗号化するために必須)"
+            exit 1
+          fi
+
+      - name: Restore DB from previous run
+        run: scripts/restore_db.sh
+
+      # ② 新店舗の情報取得(3秒おき)。INTで打ち切っても取得済み分は保存済みで、次回は続きから
+      - name: "② Fetch info of new shops"
+        id: fetch
+        timeout-minutes: 160
+        run: |
+          timeout -s INT 9000 shoplist --db aupay.db fetch --site aupay --limit "$LIMIT" || [ $? -eq 124 ]
+
+      # ③ 既存店舗の更新チェック
+      - name: "③ Refresh existing shops"
+        if: ${{ !cancelled() }}
+        timeout-minutes: 70
+        run: |
+          timeout -s INT 3600 shoplist --db aupay.db refresh --site aupay --older-than-days "$REFRESH_DAYS" --limit "$REFRESH_LIMIT" || [ $? -eq 124 ]
+
+      # ① 店舗の発見: そのあとの残り時間をすべて使う(ジョブの330分目まで)
+      - name: "① Discover shops (uses the remaining time)"
+        id: discover
+        if: ${{ !cancelled() }}
+        # 403/429/503でブロックされたときなどは失敗になるが、集めた分は保存されている(次の実行は起動しない)
+        continue-on-error: true
+        timeout-minutes: 340
+        run: |
+          budget=$(( (JOB_START + 330*60 - $(date +%s)) / 60 ))
+          [ "$budget" -gt "$COLLECT_MINUTES" ] && budget=$COLLECT_MINUTES
+          [ "$budget" -lt 5 ] && budget=5
+          echo "発見に使う時間: ${budget}分"
+          shoplist --db aupay.db aupay-discover --max-minutes "$budget" --recrawl-days "$RECRAWL_DAYS" --done-file discover.done
+
+      - name: Export, encrypt
+        if: always() && hashFiles('aupay.db') != ''
+        run: |
+          mkdir -p out
+          shoplist --db aupay.db export --site aupay --out aupay.csv
+          shoplist --db aupay.db export --site aupay --format full --include-closed --out aupay_full.csv
+          shoplist --db aupay.db changes --since-days 3650 --out aupay_changes.csv
+          scripts/crypt.sh enc aupay.db out/aupay.db.enc
+          scripts/crypt.sh enc aupay.csv out/aupay.csv.enc
+          scripts/crypt.sh enc aupay_full.csv out/aupay_full.csv.enc
+          scripts/crypt.sh enc aupay_changes.csv out/aupay_changes.csv.enc
+          echo '### au PAY マーケットの進捗' >> "$GITHUB_STEP_SUMMARY"
+          shoplist --db aupay.db status >> "$GITHUB_STEP_SUMMARY"
+
+      # publicリポジトリのArtifactは誰でもダウンロードできるため、必ず暗号化したものだけを上げる
+      - uses: actions/upload-artifact@v4
+        id: upload
+        if: always() && hashFiles('out/aupay.db.enc') != ''
+        with:
+          name: aupay-data
+          path: out/
+          retention-days: 90
+
+      # 連続実行: やることが残っていれば、次の実行をここで起動する(アップロードのあと)。
+      # 止めたいとき: Actions で aupay を Disable workflow にする / リポジトリ変数 AUPAY_CHAIN を false にする
+      - name: Start the next run right away if work remains
+        if: >-
+          ${{ !cancelled()
+          && env.CHAIN == 'true' && vars.AUPAY_CHAIN != 'false'
+          && steps.upload.outcome == 'success'
+          && steps.fetch.outcome != 'failure'
+          && steps.discover.outcome != 'failure' }}
+        run: |
+          pending=$(shoplist --db aupay.db pending-count)
+          if [ -f discover.done ]; then discovery="完了"; else discovery="継続中"; fi
+          if [ "$pending" -gt 0 ] || [ "$discovery" != "完了" ]; then
+            msg="未取得 ${pending} 件 / 発見 ${discovery} → 次の実行を起動します"
+            echo "$msg"; echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            gh workflow run aupay.yml --ref "$GITHUB_REF_NAME" -f chain=true \
+              -f collect_minutes="$COLLECT_MINUTES" -f limit="$LIMIT" \
+              -f refresh_limit="$REFRESH_LIMIT" -f refresh_days="$REFRESH_DAYS" -f recrawl_days="$RECRAWL_DAYS"
+          else
+            msg="やることが残っていないので、次の実行は起動しません"
+            echo "$msg"; echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi

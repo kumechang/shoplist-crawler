@@ -160,6 +160,27 @@ shoplist --db anamall.db export --site anamall --out anamall.csv       # Yahoo �
 - **アクセス間隔は10秒**です。ANA Mall の `robots.txt` が、AI のクローラー向けに `Crawl-delay: 10` を求めているためです(私のクローラーの名乗りはその一覧にはありませんが、サイトの意図に合わせています)。
 - ワークフローは、毎週土曜 18:37 UTC(日曜 3:37 JST)と手動実行で動きます。約250店舗で約45分です。結果は暗号化して、Artifact `anamall-data` に保存します(Yahoo と同じ `DB_PASSPHRASE`)。
 
+## au PAY マーケット
+
+Yahoo・ANA Mall とは別のDB・別のワークフロー(`.github/workflows/aupay.yml`)で動かします。
+
+```bash
+shoplist --db aupay.db aupay-discover --max-minutes 30        # 店舗名検索で店舗を集める(中断しても続きから)
+shoplist --db aupay.db fetch --site aupay --limit 20          # 店舗情報ページを取得(3秒おき)
+shoplist --db aupay.db refresh --site aupay --older-than-days 30
+shoplist --db aupay.db export --site aupay --out aupay.csv    # Yahoo と同じ11列
+```
+
+- **発見**: 店舗の一覧がどこにもないので、店舗名検索(`/bep/m/klists1?sn=…`、30件ずつ。最後のページまで取れる)を、
+  1文字ずつ(ひらがな・カタカナ・英数字)かけます。見つかった店舗名に出てくる文字(漢字など)を、新しい検索語に足していきます。
+  検索語は Shift_JIS でエンコードして送ります(UTF-8だと「該当なし」になります)。進捗は検索語・ページごとに保存され、中断しても続きから再開します。
+- **取得**: 店舗ごとの `/bep/m/kmem?user=<店舗ID>`。項目は、お店の名前、販売事業者名、通信販売業務責任者、個人情報保護責任者、住所、電話番号、FAX番号、メールアドレス(店舗によって、担当部署名・備考もあり)。
+- **CSVの空欄**: au PAY には、代表者・ストア名のフリガナ・カテゴリーの項目がないので空欄です。「運営責任者」には「通信販売業務責任者」を入れます。
+- **robots.txt**: `/bep/m/kshop?user=*`、`/user/*/list`、価格帯つきの検索などは禁止されています。使うのは、禁止されていない上記の2つだけです。
+- **連続実行**: 店舗数が多いので、やることが残っていれば、終わったあとに次の実行を自分で起動します(Yahoo と同じ仕組み)。
+  最初の起動は、Actions で `aupay` を、`chain` にチェックを入れて実行します。止めたいときは、`aupay` を Disable workflow にするか、リポジトリ変数 `AUPAY_CHAIN` を `false` にします。
+  結果は暗号化して、Artifact `aupay-data` に保存します(同じ `DB_PASSPHRASE`)。
+
 ## マナー・注意
 
 - `fetch` はデフォルトで約2〜3秒間隔でアクセスします。`--delay` を短くしすぎないでください。429/5xxは自動で間隔を空けて再試行します。

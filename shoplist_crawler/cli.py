@@ -6,7 +6,7 @@ import random
 import sys
 import time
 
-from . import anamall, api, categories, db, info, partition, probe
+from . import anamall, api, aupay, categories, db, info, partition, probe
 from .http import new_session
 
 
@@ -185,8 +185,11 @@ def _save_refresh(conn, sid, r) -> str:
 
 def _site(args):
     """--site に応じた (取得関数, 既定のアクセス間隔, CSVの行を作る関数) を返す。"""
-    if getattr(args, "site", "yahoo") == "anamall":
+    site = getattr(args, "site", "yahoo")
+    if site == "anamall":
         return anamall.fetch_guide, anamall.DEFAULT_DELAY, anamall.to_sample_row
+    if site == "aupay":
+        return aupay.fetch_kmem, aupay.DEFAULT_DELAY, aupay.to_sample_row
     return None, 2.0, None
 
 
@@ -201,6 +204,53 @@ def cmd_anamall_discover(args) -> int:
     new = db.add_ids(conn, [(code, name) for code, name, _ in shops])
     db.add_seller_categories(conn, [(code, cat) for code, _, cat in shops if cat])
     print(f"ショップ一覧 {len(shops)} 店舗 / 新規 {new} 店舗")
+    print(db.counts(conn))
+    return 0
+
+
+def cmd_aupay_discover(args) -> int:
+    """au PAY マーケットの店舗を、店舗名検索で集める。1文字の検索語から始め、見つかった店舗名の文字を足していく。"""
+    conn = db.connect(args.db)
+    session = new_session()
+    deadline = time.monotonic() + args.max_minutes * 60 if args.max_minutes else None
+    if args.done_file and os.path.exists(args.done_file):
+        os.remove(args.done_file)
+    seeds = [q for q in (aupay.usable_query(c) for c in aupay.SEEDS) if q]
+    db.add_queries(conn, aupay.SITE, seeds, seed=True)
+    new_total, pages = 0, 0
+    while True:
+        if deadline and time.monotonic() > deadline:
+            print(f"時間切れのため中断します(進捗は保存済み)。今回の新規店舗 {new_total} 件 / 検索 {pages} ページ")
+            q_total, q_done = db.query_progress(conn, aupay.SITE)
+            print(f"検索語 {q_done}/{q_total} 完了 / {db.counts(conn)}")
+            return 0
+        nxt = db.next_query(conn, aupay.SITE, args.recrawl_days or None)
+        if nxt is None:
+            break
+        query, total, pages_done = nxt
+        page = pages_done + 1
+        try:
+            total, shops = aupay.search_page(session, query, page)
+        except aupay.SearchError as e:
+            print(f"検索「{query}」{page}ページ目でエラー: {e}", file=sys.stderr)
+            return 3 if e.status in (403, 429, 503) else 1
+        except Exception as e:  # 通信エラーなど
+            print(f"検索「{query}」{page}ページ目で通信エラー: {type(e).__name__}", file=sys.stderr)
+            return 1
+        pages += 1
+        new = db.add_ids(conn, shops)
+        new_total += new
+        db.bump_queries(conn, aupay.SITE, aupay.query_chars(n for _, n in shops))
+        done = not shops or page * aupay.PAGE_SIZE >= total  # 最後のページ(または結果が空)なら、この検索語は完了
+        db.save_query(conn, aupay.SITE, query, total, page, done)
+        if page == 1 or done:
+            print(f"「{query}」{page}ページ目 全{total}件 新規{new}{' 完了' if done else ''}", flush=True)
+        time.sleep(args.delay)
+    if args.done_file:
+        with open(args.done_file, "w", encoding="utf-8") as f:
+            f.write("done\n")
+    q_total, q_done = db.query_progress(conn, aupay.SITE)
+    print(f"全検索語({q_total})の検索が完了しました。今回の新規店舗 {new_total} 件")
     print(db.counts(conn))
     return 0
 
@@ -320,6 +370,13 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("--list-only", action="store_true", help="対象カテゴリーを表示するだけ(商品検索はしない)")
     cc.set_defaults(func=cmd_collect_categories)
 
+    au = sub.add_parser("aupay-discover", help="au PAY マーケットの店舗を、店舗名検索(1文字ずつ)で集める")
+    au.add_argument("--delay", type=float, default=aupay.DEFAULT_DELAY, help="リクエスト間隔(秒)")
+    au.add_argument("--max-minutes", type=float, help="この時間で中断(再実行で続きから)")
+    au.add_argument("--recrawl-days", type=float, default=30, help="終わってからこの日数が経った検索語は、やり直す (default: 30, 0=やり直さない)")
+    au.add_argument("--done-file", help="すべての検索語が終わったときだけ、このファイルを作る")
+    au.set_defaults(func=cmd_aupay_discover)
+
     ad = sub.add_parser("anamall-discover", help="ANA Mall のショップ一覧から店舗コードを集める(1リクエスト)")
     ad.set_defaults(func=cmd_anamall_discover)
 
@@ -329,16 +386,16 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_add_ids)
 
     f = sub.add_parser("fetch", help="未取得の店舗の会社概要ページを取得する")
-    f.add_argument("--site", choices=("yahoo", "anamall"), default="yahoo", help="取得先のモール (default: yahoo)")
-    f.add_argument("--delay", type=float, default=None, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ (既定: yahoo=2秒 / anamall=10秒)")
+    f.add_argument("--site", choices=("yahoo", "anamall", "aupay"), default="yahoo", help="取得先のモール (default: yahoo)")
+    f.add_argument("--delay", type=float, default=None, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ (既定: yahoo=2秒 / anamall=10秒 / aupay=3秒)")
     f.add_argument("--limit", type=int, help="今回取得する最大件数")
     f.add_argument("--retry-errors", action="store_true", help="前回エラーだった店舗も再取得")
     f.set_defaults(func=cmd_fetch)
 
     r = sub.add_parser("refresh", help="取得から日数が経った店舗を取り直して、変更・閉店を記録する")
     r.add_argument("--older-than-days", type=float, default=30, help="取得からこの日数が経った店舗が対象 (default: 30)")
-    r.add_argument("--site", choices=("yahoo", "anamall"), default="yahoo", help="取得先のモール (default: yahoo)")
-    r.add_argument("--delay", type=float, default=None, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ (既定: yahoo=2秒 / anamall=10秒)")
+    r.add_argument("--site", choices=("yahoo", "anamall", "aupay"), default="yahoo", help="取得先のモール (default: yahoo)")
+    r.add_argument("--delay", type=float, default=None, help="リクエスト間隔(秒)。ランダムに最大50%%上乗せ (既定: yahoo=2秒 / anamall=10秒 / aupay=3秒)")
     r.add_argument("--limit", type=int, help="今回チェックする最大件数")
     r.set_defaults(func=cmd_refresh)
 
@@ -352,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", default="shops.csv")
     e.add_argument("--format", choices=("sample", "full"), default="sample",
                    help="sample=指定の列(店舗×カテゴリーごとに1行) / full=全項目(1店舗1行)")
-    e.add_argument("--site", choices=("yahoo", "anamall"), default="yahoo", help="CSVを作るモール (default: yahoo)")
+    e.add_argument("--site", choices=("yahoo", "anamall", "aupay"), default="yahoo", help="CSVを作るモール (default: yahoo)")
     e.add_argument("--include-closed", action="store_true", help="閉店・削除を検出した店舗(最後に取れた内容)も出力に含める")
     e.set_defaults(func=cmd_export)
 
